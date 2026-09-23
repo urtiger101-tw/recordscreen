@@ -71,6 +71,10 @@ Invoke-RestMethod http://127.0.0.1:17321/api/v1/recording/stop -Method Post -Hea
 
 MCP tools：`get_status`、`list_windows`、`select_window`、`take_screenshot`、`start_recording`（`fps` 可選）與 `stop_recording`。`select_window` 使用 `list_windows` 回傳的 HWND；傳入 `null` 可切回整個桌面。stdio 子程序會從同一個使用者設定檔讀取 token，再經過本機 API 呼叫 GUI app。關閉 GUI 後，MCP 工具會回報 API 無法連線。
 
+## Codex Agent skill
+
+專案包含 `.agents/skills/recordscreen-control/SKILL.md`，說明如何透過 MCP 或本機 HTTP API 操作 RecordScreen，包含列舉／選擇視窗、截圖、錄影、MCP client 設定與 token 保護。Codex 在本專案工作時可使用 `$recordscreen-control` 呼叫此 skill。
+
 Release 使用 size optimization、LTO、單一 codegen unit、移除符號與 abort panic；這些設定會讓 release 編譯較久，但不影響 debug build。
 
 ## 螢幕與隱私

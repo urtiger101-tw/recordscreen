@@ -1,0 +1,4 @@
+interface:
+  display_name: "RecordScreen Control"
+  short_description: "Operate the Windows recorder through MCP or its local API."
+  default_prompt: "Use $recordscreen-control to capture or record a Windows app window."
