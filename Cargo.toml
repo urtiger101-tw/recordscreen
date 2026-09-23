@@ -1,6 +1,6 @@
 [package]
 name = "recordscreen"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Windows desktop screen recorder with a local agent control API"
 

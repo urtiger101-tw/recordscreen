@@ -1,5 +1,5 @@
 #define AppName "RecordScreen"
-#define AppVersion "0.1.1"
+#define AppVersion "0.1.2"
 #define AppPublisher "urtiger101-tw"
 #define AppExeName "recordscreen.exe"
 #define FFmpegUrl "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z"
@@ -62,7 +62,7 @@ begin
     Exit;
   end;
 
-  StringChangeEx(Path, '%USERPROFILE%', ExpandConstant('{userprofile}'), True);
+  StringChangeEx(Path, '%USERPROFILE%', GetEnv('USERPROFILE'), True);
   StringChangeEx(Path, '%LOCALAPPDATA%', ExpandConstant('{localappdata}'), True);
   StringChangeEx(Path, '%APPDATA%', ExpandConstant('{userappdata}'), True);
   StringChangeEx(Path, '%PROGRAMDATA%', ExpandConstant('{commonappdata}'), True);
@@ -104,6 +104,7 @@ end;
 function IsFFmpegAvailable: Boolean;
 var
   PathValue: String;
+  UserProfile: String;
 begin
   Result := DirectoryHasFFmpeg(ExpandConstant('{app}')) or
     FileExists(ExpandConstant('{app}\_ffmpeg_runtime\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'));
@@ -126,10 +127,11 @@ begin
     Exit;
   end;
 
+  UserProfile := GetEnv('USERPROFILE');
   Result := DirectoryHasFFmpeg(ExpandConstant('{localappdata}\Microsoft\WinGet\Links')) or
-    DirectoryHasFFmpeg(ExpandConstant('{userprofile}\scoop\shims')) or
-    DirectoryHasFFmpeg(ExpandConstant('{userprofile}\scoop\apps\ffmpeg-essentials\current\bin')) or
-    DirectoryHasFFmpeg(ExpandConstant('{userprofile}\scoop\apps\ffmpeg\current\bin')) or
+    ((UserProfile <> '') and DirectoryHasFFmpeg(UserProfile + '\scoop\shims')) or
+    ((UserProfile <> '') and DirectoryHasFFmpeg(UserProfile + '\scoop\apps\ffmpeg-essentials\current\bin')) or
+    ((UserProfile <> '') and DirectoryHasFFmpeg(UserProfile + '\scoop\apps\ffmpeg\current\bin')) or
     DirectoryHasFFmpeg(ExpandConstant('{commonappdata}\chocolatey\bin')) or
     DirectoryHasFFmpeg(ExpandConstant('{autopf}\ffmpeg\bin')) or
     DirectoryHasFFmpeg(ExpandConstant('{autopf32}\ffmpeg\bin'));
