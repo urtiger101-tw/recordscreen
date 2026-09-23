@@ -89,12 +89,12 @@ Keep the desktop GUI running. Add this server entry to the MCP client's configur
 
 Restart or reload the MCP client and verify that `get_status` and `list_windows` are available. The MCP helper reads the local token itself and forwards requests to the GUI's loopback API; do not add the token to MCP configuration.
 
-The installer is per-user and defaults to `%LOCALAPPDATA%\Programs\RecordScreen`; no administrator rights are needed. Setup checks PATH, registry PATH values, and common WinGet/Scoop/Chocolatey locations. If it cannot find FFmpeg, the wizard offers a checked-by-default download of FFmpeg 9.0.2 essentials from Gyan.dev, verifies its pinned SHA-256, and extracts it under the install directory's `_ffmpeg_runtime` folder. Setup does not change PATH; uninstall removes this private runtime folder. If setup skips the download, install an FFmpeg build that supports `gdigrab` and `libx264` on PATH or beside the executable. Replace `YOUR_USER` in the example with the Windows profile folder name.
+The installer is per-user and defaults to `%LOCALAPPDATA%\Programs\RecordScreen`; no administrator rights are needed. Setup checks PATH and common WinGet/Scoop/Chocolatey locations. If it cannot find FFmpeg, the wizard checks the Gyan.dev FFmpeg 9.0.2 essentials download by default; the download option remains visible so it can be selected manually if detection disagrees with the app. In unattended setup, pass `/DOWNLOADFFMPEG` to force the download. Setup verifies its pinned SHA-256 and extracts it under the install directory's `_ffmpeg_runtime` folder. Setup does not change PATH; uninstall removes this private runtime folder. If setup skips the download, install an FFmpeg build that supports `gdigrab` and `libx264` on PATH or beside the executable. Replace `YOUR_USER` in the example with the Windows profile folder name.
 
 ## Capture limits
 
 - The target app must remain open and not minimized. A protected surface may render black, and app-specific rendering can affect capture results.
-- FFmpeg must be available through PATH, a supported common install location, beside `recordscreen.exe`, or the installer's `_ffmpeg_runtime` folder; it must support `gdigrab` and `libx264`.
+- FFmpeg must be available through PATH, WinGet, Scoop, another supported common install location, beside `recordscreen.exe`, or the installer's `_ffmpeg_runtime` folder; it must support `gdigrab` and `libx264`.
 - The API and MCP helper do not provide remote/network capture. The API rejects non-loopback requests.
 - The app captures video only; it does not record system or microphone audio.
 

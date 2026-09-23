@@ -1,5 +1,5 @@
 #define AppName "RecordScreen"
-#define AppVersion "0.1.2"
+#define AppVersion "0.1.3"
 #define AppPublisher "urtiger101-tw"
 #define AppExeName "recordscreen.exe"
 #define FFmpegUrl "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z"
@@ -29,7 +29,6 @@ ArchiveExtraction=basic
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
-Name: "downloadffmpeg"; Description: "Download FFmpeg from gyan.dev (~35 MB); required for capture"; GroupDescription: "Capture dependency:"; Check: not IsFFmpegAvailable
 
 [Files]
 Source: "..\target\release\recordscreen.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -47,9 +46,11 @@ Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: postin
 
 [Code]
 var
+  FFmpegOptionsPage: TInputOptionWizardPage;
   FFmpegDownloadPage: TDownloadWizardPage;
   FFmpegRuntimeCreatedBySetup: Boolean;
   SetupCompleted: Boolean;
+  FFmpegOptionInitialized: Boolean;
 
 function DirectoryHasFFmpeg(const Directory: String): Boolean;
 var
@@ -101,31 +102,13 @@ begin
   Result := False;
 end;
 
-function IsFFmpegAvailable: Boolean;
+function IsSystemFFmpegAvailable: Boolean;
 var
-  PathValue: String;
   UserProfile: String;
 begin
-  Result := DirectoryHasFFmpeg(ExpandConstant('{app}')) or
-    FileExists(ExpandConstant('{app}\_ffmpeg_runtime\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'));
-  if Result then
-    Exit;
-
   Result := PathHasFFmpeg(GetEnv('PATH'));
   if Result then
     Exit;
-
-  if RegQueryStringValue(HKCU, 'Environment', 'Path', PathValue) and PathHasFFmpeg(PathValue) then
-  begin
-    Result := True;
-    Exit;
-  end;
-
-  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', PathValue) and PathHasFFmpeg(PathValue) then
-  begin
-    Result := True;
-    Exit;
-  end;
 
   UserProfile := GetEnv('USERPROFILE');
   Result := DirectoryHasFFmpeg(ExpandConstant('{localappdata}\Microsoft\WinGet\Links')) or
@@ -137,10 +120,38 @@ begin
     DirectoryHasFFmpeg(ExpandConstant('{autopf32}\ffmpeg\bin'));
 end;
 
+function IsFFmpegAvailable: Boolean;
+begin
+  Result := DirectoryHasFFmpeg(ExpandConstant('{app}')) or
+    FileExists(ExpandConstant('{app}\_ffmpeg_runtime\bin\ffmpeg.exe')) or
+    FileExists(ExpandConstant('{app}\_ffmpeg_runtime\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe')) or
+    IsSystemFFmpegAvailable;
+end;
+
 procedure InitializeWizard;
 begin
+  FFmpegOptionsPage := CreateInputOptionPage(wpSelectTasks, 'Capture dependency',
+    'Choose whether to install FFmpeg alongside RecordScreen.',
+    'If you already have FFmpeg, you can still select this option if the app cannot find it.',
+    False, False);
+  FFmpegOptionsPage.Add('Download FFmpeg essentials from gyan.dev (~35 MB)');
+  FFmpegOptionsPage.Values[0] := not IsSystemFFmpegAvailable or
+    (Pos('/DOWNLOADFFMPEG', Uppercase(GetCmdTail)) > 0);
+
   FFmpegDownloadPage := CreateDownloadPage('Downloading FFmpeg', 'FFmpeg is required for screenshots and recording.', nil);
   FFmpegDownloadPage.ShowBaseNameInsteadOfUrl := True;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = FFmpegOptionsPage.ID) and not FFmpegOptionInitialized then
+  begin
+    if IsFFmpegAvailable then
+      FFmpegOptionsPage.Values[0] := Pos('/DOWNLOADFFMPEG', Uppercase(GetCmdTail)) > 0
+    else
+      FFmpegOptionsPage.Values[0] := True;
+    FFmpegOptionInitialized := True;
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -148,7 +159,7 @@ var
   Error: String;
 begin
   Result := True;
-  if (CurPageID = wpReady) and WizardIsTaskSelected('downloadffmpeg') and not IsFFmpegAvailable then
+  if (CurPageID = wpReady) and FFmpegOptionsPage.Values[0] then
   begin
     FFmpegDownloadPage.Clear;
     FFmpegDownloadPage.Add('{#FFmpegUrl}', 'ffmpeg-essentials.7z', '{#FFmpegSha256}');
@@ -175,13 +186,13 @@ var
   RuntimeDirectory: String;
 begin
   Result := '';
-  if not (WizardIsTaskSelected('downloadffmpeg') and not IsFFmpegAvailable) then
+  if not FFmpegOptionsPage.Values[0] then
     Exit;
 
   RuntimeDirectory := ExpandConstant('{app}\_ffmpeg_runtime');
-  if DirExists(RuntimeDirectory) then
+  if DirExists(RuntimeDirectory) and not DelTree(RuntimeDirectory, True, True, True) then
   begin
-    Result := 'The FFmpeg runtime folder already exists but no usable FFmpeg was found. Remove it or choose another install folder, then run Setup again.';
+    Result := 'Could not replace the existing FFmpeg runtime folder.';
     Exit;
   end;
 
@@ -194,6 +205,9 @@ begin
 
   try
     ExtractArchive(ExpandConstant('{tmp}\ffmpeg-essentials.7z'), RuntimeDirectory, '', True, nil);
+    if not (FileExists(RuntimeDirectory + '\bin\ffmpeg.exe') or
+      FileExists(RuntimeDirectory + '\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe')) then
+      RaiseException('The FFmpeg archive did not contain ffmpeg.exe at the expected path.');
   except
     Result := 'Could not extract FFmpeg: ' + GetExceptionMessage;
     DelTree(RuntimeDirectory, True, True, True);

@@ -290,7 +290,7 @@ impl eframe::App for RecorderApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("RecordScreen");
+                ui.heading(format!("RecordScreen v{}", env!("CARGO_PKG_VERSION")));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("language")
                         .selected_text(match self.language {
@@ -461,8 +461,8 @@ impl eframe::App for RecorderApp {
             }
             if self.ffmpeg.is_none() {
                 ui.colored_label(egui::Color32::RED, lang.text(
-                    "FFmpeg not found. Re-run the installer and select Download FFmpeg.",
-                    "找不到 FFmpeg。請重新執行安裝程式並選擇下載 FFmpeg。",
+                    "FFmpeg not found. Re-run Setup and check Download FFmpeg under Capture dependency.",
+                    "找不到 FFmpeg。請重新執行安裝程式，並勾選「Capture dependency」下的 FFmpeg 下載選項。",
                 ));
             } else if let Some(path) = &self.ffmpeg {
                 ui.small(format!("FFmpeg：{}", path.display()));
@@ -635,6 +635,13 @@ fn find_ffmpeg() -> Option<PathBuf> {
         }
     }
 
+    #[cfg(windows)]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        if let Some(candidate) = find_winget_ffmpeg(&PathBuf::from(local_app_data).join("Microsoft/WinGet/Packages")) {
+            return Some(candidate);
+        }
+    }
+
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         for name in if cfg!(windows) {
@@ -644,6 +651,23 @@ fn find_ffmpeg() -> Option<PathBuf> {
         } {
             let candidate = dir.join(name);
             if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_winget_ffmpeg(packages: &Path) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(packages).ok()?.flatten() {
+        let path = entry.path();
+        let is_gyan_ffmpeg = entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("Gyan.FFmpeg");
+        if is_gyan_ffmpeg {
+            if let Some(candidate) = find_ffmpeg_in_tree(&path, 5) {
                 return Some(candidate);
             }
         }

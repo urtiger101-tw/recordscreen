@@ -12,6 +12,8 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 
 介面右上方可切換 English／繁體中文。首次啟動預設 English，選擇會儲存至 `%LOCALAPPDATA%\RecordScreen\language.txt`，下次啟動沿用。
 
+主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。
+
 「錄影來源」可選整個桌面或指定 app 視窗。清單會顯示標題與 PID；同一 app 的不同視窗可分別選取。指定後，截圖及錄影都只擷取該視窗，即使它被其他視窗遮住也不會改錄整個桌面。目標 app 必須保持開啟且不要最小化；錄影期間不能切換來源。
 
 ## 建置與啟動
@@ -30,7 +32,9 @@ FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/bui
 
 從 GitHub Releases 下載 `RecordScreen-Setup-<版本>-x64.exe`，執行後預設安裝至目前使用者的 `%LOCALAPPDATA%\Programs\RecordScreen`，不需要系統管理員權限。開始功能表會建立捷徑；安裝精靈也可選擇建立桌面捷徑。解除安裝可從 Windows「已安裝的應用程式」或開始功能表執行。
 
-安裝程式會先尋找 PATH、登錄檔 PATH、WinGet、Scoop、Chocolatey 與常見 FFmpeg 目錄。若找不到，安裝精靈會預設勾選下載 FFmpeg 9.0.2 essentials（約 35 MB），從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 以 HTTPS 下載，並在解壓前驗證固定的 SHA-256。FFmpeg 會放在 RecordScreen 安裝目錄的 `_ffmpeg_runtime`，不會修改系統 PATH；解除安裝 RecordScreen 時會一併移除這個目錄。若電腦目前離線，可取消勾選並稍後再安裝 FFmpeg。此下載由 Gyan.dev 提供，該版本依 GPLv3 發佈；本安裝程式不重新散佈 FFmpeg 二進位檔。
+安裝程式會先尋找 PATH、WinGet、Scoop、Chocolatey 與常見 FFmpeg 目錄。若找不到，安裝精靈會預設勾選下載 FFmpeg 9.0.2 essentials（約 35 MB）；即使偵測到其他 FFmpeg，仍可手動勾選此項以修復。檔案會從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 以 HTTPS 下載，並在解壓前驗證固定的 SHA-256。FFmpeg 會放在 RecordScreen 安裝目錄的 `_ffmpeg_runtime`，不會修改系統 PATH；解除安裝 RecordScreen 時會一併移除這個目錄。若電腦目前離線，可取消勾選並稍後再安裝 FFmpeg。此下載由 Gyan.dev 提供，該版本依 GPLv3 發佈；本安裝程式不重新散佈 FFmpeg 二進位檔。
+
+無人值守安裝若需強制下載 FFmpeg，可加上 `/DOWNLOADFFMPEG`，例如 `RecordScreen-Setup-0.1.3-x64.exe /VERYSILENT /DOWNLOADFFMPEG`。
 
 自行從原始碼啟動時，仍須先安裝支援 `gdigrab` 與 `libx264` 的 FFmpeg，並放入 PATH 或程式同目錄。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
 
