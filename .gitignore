@@ -1,0 +1,9 @@
+target/
+dist/
+.sites-runtime/
+.opencode/
+
+# Local agent notes
+task_plan.md
+findings.md
+progress.md
