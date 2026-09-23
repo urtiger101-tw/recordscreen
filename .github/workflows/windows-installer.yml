@@ -25,7 +25,8 @@ jobs:
         run: |
           $iscc = @(
             (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
-            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe')
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { throw 'ISCC.exe not found in either Program Files directory.' }
           & $iscc 'installer\RecordScreen.iss'
