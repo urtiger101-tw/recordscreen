@@ -461,8 +461,8 @@ impl eframe::App for RecorderApp {
             }
             if self.ffmpeg.is_none() {
                 ui.colored_label(egui::Color32::RED, lang.text(
-                    "FFmpeg not found. Install FFmpeg and make sure ffmpeg.exe is in PATH.",
-                    "找不到 FFmpeg。請安裝 FFmpeg，並確認 ffmpeg.exe 在 PATH 中。",
+                    "FFmpeg not found. Re-run the installer and select Download FFmpeg.",
+                    "找不到 FFmpeg。請重新執行安裝程式並選擇下載 FFmpeg。",
                 ));
             } else if let Some(path) = &self.ffmpeg {
                 ui.small(format!("FFmpeg：{}", path.display()));
@@ -622,8 +622,19 @@ fn find_ffmpeg() -> Option<PathBuf> {
             if candidate.is_file() {
                 return Some(candidate);
             }
+            if let Some(candidate) = find_ffmpeg_in_tree(&dir.join("_ffmpeg_runtime"), 4) {
+                return Some(candidate);
+            }
         }
     }
+
+    #[cfg(windows)]
+    for candidate in common_ffmpeg_paths() {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         for name in if cfg!(windows) {
@@ -637,6 +648,63 @@ fn find_ffmpeg() -> Option<PathBuf> {
             }
         }
     }
+    None
+}
+
+#[cfg(windows)]
+fn common_ffmpeg_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut add = |base: Option<std::ffi::OsString>, suffix: &str| {
+        if let Some(base) = base {
+            paths.push(PathBuf::from(base).join(suffix).join("ffmpeg.exe"));
+        }
+    };
+
+    add(std::env::var_os("LOCALAPPDATA"), "Microsoft/WinGet/Links");
+    add(std::env::var_os("LOCALAPPDATA"), "Programs/ffmpeg/bin");
+    add(std::env::var_os("USERPROFILE"), "scoop/shims");
+    add(
+        std::env::var_os("USERPROFILE"),
+        "scoop/apps/ffmpeg-essentials/current/bin",
+    );
+    add(
+        std::env::var_os("USERPROFILE"),
+        "scoop/apps/ffmpeg/current/bin",
+    );
+    add(std::env::var_os("ProgramData"), "chocolatey/bin");
+    add(std::env::var_os("ProgramFiles"), "ffmpeg/bin");
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        paths.push(PathBuf::from(program_files_x86).join("ffmpeg/bin/ffmpeg.exe"));
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn find_ffmpeg_in_tree(root: &Path, max_depth: usize) -> Option<PathBuf> {
+    if max_depth == 0 || !root.is_dir() {
+        return None;
+    }
+
+    let direct = root.join("ffmpeg.exe");
+    if direct.is_file() {
+        return Some(direct);
+    }
+
+    let bin = root.join("bin").join("ffmpeg.exe");
+    if bin.is_file() {
+        return Some(bin);
+    }
+
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(candidate) = find_ffmpeg_in_tree(&path, max_depth - 1) {
+                return Some(candidate);
+            }
+        }
+    }
+
     None
 }
 

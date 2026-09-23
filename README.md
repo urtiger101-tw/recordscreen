@@ -5,7 +5,7 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 ## 使用需求
 
 - Windows 10 或更新版本。
-- FFmpeg 必須在 `PATH` 中，或與 `recordscreen.exe` 放在同一個資料夾。FFmpeg 需包含 Windows `gdigrab` 輸入裝置與 `libx264` 編碼器。
+- FFmpeg 需包含 Windows `gdigrab` 輸入裝置與 `libx264` 編碼器。Windows 安裝程式會先檢查 PATH 與常見安裝位置；找不到時預設提供下載並安裝 FFmpeg。
 - 第一次啟動後，API 會監聽 `127.0.0.1:17321`；桌面 app 必須保持開啟，agent 才能呼叫。
 
 預設輸出位置：`%USERPROFILE%\Videos\RecordScreen`。可在 GUI 修改輸出資料夾。錄影預設 30 FPS，可在 GUI 調整 10–60 FPS。介面使用 Windows 已安裝的微軟正黑體／新細明體，修正中文缺字問題。
@@ -30,13 +30,15 @@ FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/bui
 
 從 GitHub Releases 下載 `RecordScreen-Setup-<版本>-x64.exe`，執行後預設安裝至目前使用者的 `%LOCALAPPDATA%\Programs\RecordScreen`，不需要系統管理員權限。開始功能表會建立捷徑；安裝精靈也可選擇建立桌面捷徑。解除安裝可從 Windows「已安裝的應用程式」或開始功能表執行。
 
-安裝包不包含 FFmpeg。請先將包含 `gdigrab` 與 `libx264` 的 `ffmpeg.exe` 加入使用者 `PATH`；app 會在啟動時檢查 FFmpeg。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
+安裝程式會先尋找 PATH、登錄檔 PATH、WinGet、Scoop、Chocolatey 與常見 FFmpeg 目錄。若找不到，安裝精靈會預設勾選下載 FFmpeg 9.0.2 essentials（約 35 MB），從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 以 HTTPS 下載，並在解壓前驗證固定的 SHA-256。FFmpeg 會放在 RecordScreen 安裝目錄的 `_ffmpeg_runtime`，不會修改系統 PATH；解除安裝 RecordScreen 時會一併移除這個目錄。若電腦目前離線，可取消勾選並稍後再安裝 FFmpeg。此下載由 Gyan.dev 提供，該版本依 GPLv3 發佈；本安裝程式不重新散佈 FFmpeg 二進位檔。
+
+自行從原始碼啟動時，仍須先安裝支援 `gdigrab` 與 `libx264` 的 FFmpeg，並放入 PATH 或程式同目錄。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
 
 ```powershell
 Join-Path $env:LOCALAPPDATA 'Programs\RecordScreen\recordscreen.exe'
 ```
 
-此安裝程式目前支援 Windows x64。從原始碼建置安裝包前，需先安裝 Inno Setup 6 並執行 `cargo build --release`，再以 Inno Setup Compiler 編譯 `installer\RecordScreen.iss`。
+此安裝程式目前支援 Windows x64。從原始碼建置安裝包前，需先安裝 Inno Setup 7 並執行 `cargo build --release`，再以 Inno Setup Compiler 編譯 `installer\RecordScreen.iss`。
 
 ## Agent HTTP API
 
