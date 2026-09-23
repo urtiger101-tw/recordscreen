@@ -5,7 +5,7 @@ description: Control the RecordScreen Windows desktop app through its MCP tools 
 
 # RecordScreen Control
 
-Use this skill to operate the RecordScreen app in `D:\recordscreen`. Prefer its MCP tools when they are available. Otherwise use the authenticated HTTP API on `127.0.0.1:17321`.
+Use this skill to operate the RecordScreen Windows app. A standard per-user installation is at `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`; a source checkout may instead run `target\release\recordscreen.exe`. Prefer its MCP tools when they are available. Otherwise use the authenticated HTTP API on `127.0.0.1:17321`.
 
 ## Start-up and safety
 
@@ -74,13 +74,13 @@ Invoke-RestMethod "$base/api/v1/recording/stop" -Method Post -Headers $headers
 
 ## MCP client setup
 
-Keep the desktop GUI running. Add this server entry to the MCP client's configuration, using the actual path to `recordscreen.exe`:
+Keep the desktop GUI running. Add this server entry to the MCP client's configuration, using the actual path to `recordscreen.exe`. For the standard installation, run `Join-Path $env:LOCALAPPDATA 'Programs\RecordScreen\recordscreen.exe'` in PowerShell to get the path; MCP JSON usually does not expand `%LOCALAPPDATA%`:
 
 ```json
 {
   "mcpServers": {
     "recordscreen": {
-      "command": "D:\\recordscreen\\target\\release\\recordscreen.exe",
+      "command": "C:\\Users\\YOUR_USER\\AppData\\Local\\Programs\\RecordScreen\\recordscreen.exe",
       "args": ["--mcp"]
     }
   }
@@ -88,6 +88,8 @@ Keep the desktop GUI running. Add this server entry to the MCP client's configur
 ```
 
 Restart or reload the MCP client and verify that `get_status` and `list_windows` are available. The MCP helper reads the local token itself and forwards requests to the GUI's loopback API; do not add the token to MCP configuration.
+
+The installer is per-user and defaults to `%LOCALAPPDATA%\Programs\RecordScreen`; no administrator rights are needed. FFmpeg is a separate prerequisite and must be on `PATH` or beside the installed executable. Replace `YOUR_USER` in the example with the Windows profile folder name.
 
 ## Capture limits
 

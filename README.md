@@ -26,6 +26,18 @@ target\release\recordscreen.exe
 
 FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/)。請將 `bin` 資料夾加入使用者 `PATH`，或複製 `ffmpeg.exe` 至 `recordscreen.exe` 同一目錄。
 
+## Windows 安裝程式
+
+從 GitHub Releases 下載 `RecordScreen-Setup-<版本>-x64.exe`，執行後預設安裝至目前使用者的 `%LOCALAPPDATA%\Programs\RecordScreen`，不需要系統管理員權限。開始功能表會建立捷徑；安裝精靈也可選擇建立桌面捷徑。解除安裝可從 Windows「已安裝的應用程式」或開始功能表執行。
+
+安裝包不包含 FFmpeg。請先將包含 `gdigrab` 與 `libx264` 的 `ffmpeg.exe` 加入使用者 `PATH`；app 會在啟動時檢查 FFmpeg。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
+
+```powershell
+Join-Path $env:LOCALAPPDATA 'Programs\RecordScreen\recordscreen.exe'
+```
+
+此安裝程式目前支援 Windows x64。從原始碼建置安裝包前，需先安裝 Inno Setup 6 並執行 `cargo build --release`，再以 Inno Setup Compiler 編譯 `installer\RecordScreen.iss`。
+
 ## Agent HTTP API
 
 Agent 只應連線至 `http://127.0.0.1:17321`。GUI 顯示 bearer token；token 也儲存在 `%LOCALAPPDATA%\RecordScreen\agent-token.txt`。請勿把 token 貼到遠端服務、提交到 Git，或提供給不受信任的 agent。每個控制端點都需要 `Authorization: Bearer <token>`。API 會拒絕非 loopback Host／Origin。
@@ -62,7 +74,7 @@ Invoke-RestMethod http://127.0.0.1:17321/api/v1/recording/stop -Method Post -Hea
 {
   "mcpServers": {
     "recordscreen": {
-      "command": "D:\\recordscreen\\target\\release\\recordscreen.exe",
+      "command": "C:\\Users\\YOUR_USER\\AppData\\Local\\Programs\\RecordScreen\\recordscreen.exe",
       "args": ["--mcp"]
     }
   }
@@ -75,7 +87,7 @@ MCP tools：`get_status`、`list_windows`、`select_window`、`take_screenshot`�
 
 專案包含 `.agents/skills/recordscreen-control/SKILL.md`，說明如何透過 MCP 或本機 HTTP API 操作 RecordScreen，包含列舉／選擇視窗、截圖、錄影、MCP client 設定與 token 保護。Codex 在本專案工作時可使用 `$recordscreen-control` 呼叫此 skill。
 
-Release 使用 size optimization、LTO、單一 codegen unit、移除符號與 abort panic；這些設定會讓 release 編譯較久，但不影響 debug build。
+Release 使用 size optimization、LTO、單一 codegen unit、移除符號與 abort panic；這些設定會讓 release 編譯較久，但不影響 debug build。MCP JSON 範例中的 `YOUR_USER` 要換成目前 Windows 使用者資料夾名稱。
 
 ## 螢幕與隱私
 
