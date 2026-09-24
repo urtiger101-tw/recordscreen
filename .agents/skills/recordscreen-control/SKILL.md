@@ -38,6 +38,8 @@ Typical requested app-window capture:
 
 The desktop app's own selector can also switch between **Entire desktop** and a listed app window. The same source is used for screenshots and recordings. The selected source is locked while recording.
 
+The GUI stores language, output folder, and frame rate in `%LOCALAPPDATA%\RecordScreen\setting.json`. It creates the file on first launch. After editing these values in the GUI, click **Apply settings** before capture; pending changes are not used for capture. Window HWNDs are session-specific and are not saved to the file.
+
 ## HTTP API fallback
 
 Use PowerShell only on the local machine. The bearer token is stored at `%LOCALAPPDATA%\RecordScreen\agent-token.txt`; keep it in memory for the request and never print it, include it in logs, commit it, or send it to a remote service.

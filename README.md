@@ -8,11 +8,11 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 - FFmpeg 需包含 Windows `gdigrab` 輸入裝置與 `libx264` 編碼器。Windows 安裝程式會先檢查 PATH 與常見安裝位置；找不到時預設提供下載並安裝 FFmpeg。
 - 第一次啟動後，API 會監聽 `127.0.0.1:17321`；桌面 app 必須保持開啟，agent 才能呼叫。
 
-預設輸出位置：`%USERPROFILE%\Videos\RecordScreen`。可在 GUI 修改輸出資料夾。錄影預設 30 FPS，可在 GUI 調整 10–60 FPS。介面使用 Windows 已安裝的微軟正黑體／新細明體，修正中文缺字問題。
+預設輸出位置：`%USERPROFILE%\Videos\RecordScreen`。可在 GUI 修改輸出資料夾。錄影預設 30 FPS，可在 GUI 調整 10–60 FPS。修改設定後按「Apply settings／套用設定」才會儲存並套用；未套用前不能開始新的擷取。介面使用 Windows 已安裝的微軟正黑體／新細明體，修正中文缺字問題。
 
-介面右上方可切換 English／繁體中文。首次啟動預設 English，選擇會儲存至 `%LOCALAPPDATA%\RecordScreen\language.txt`，下次啟動沿用。
+介面右上方可切換 English／繁體中文。首次啟動預設 English。語系、輸出資料夾和 FPS 儲存於 `%LOCALAPPDATA%\RecordScreen\setting.json`；若檔案不存在，啟動時自動建立。從舊版升級且尚無 JSON 時，會從 `language.txt` 匯入語系。變更語系後按「Apply settings／套用設定」保存，下次啟動沿用。設定檔無法讀取時會顯示錯誤，保留原檔供修復。
 
-主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。
+主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。程式視窗、執行檔與安裝捷徑使用相同的 RecordScreen 圖示；圖示原始檔位於 `assets/recordscreen.ico`。
 
 「錄影來源」可選整個桌面或指定 app 視窗。清單會顯示標題與 PID；同一 app 的不同視窗可分別選取。指定後，截圖及錄影都只擷取該視窗，即使它被其他視窗遮住也不會改錄整個桌面。目標 app 必須保持開啟且不要最小化；錄影期間不能切換來源。
 

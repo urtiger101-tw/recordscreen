@@ -1,11 +1,13 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod server;
+mod settings;
 mod windows_capture;
 
 use eframe::egui;
 use serde::Serialize;
 use server::{AppState, RecordingProcess};
+use settings::Settings;
 use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -31,26 +33,18 @@ enum Language {
 }
 
 impl Language {
-    fn load() -> Self {
-        match std::fs::read_to_string(language_file())
-            .unwrap_or_default()
-            .trim()
-        {
+    fn from_code(code: &str) -> Self {
+        match code {
             "zh-TW" => Self::TraditionalChinese,
             _ => Self::English,
         }
     }
 
-    fn save(self) -> Result<(), String> {
-        let path = language_file();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let value = match self {
+    fn code(self) -> &'static str {
+        match self {
             Self::English => "en-US",
             Self::TraditionalChinese => "zh-TW",
-        };
-        std::fs::write(path, value).map_err(|error| error.to_string())
+        }
     }
 
     fn text(self, en: &'static str, zh: &'static str) -> &'static str {
@@ -67,7 +61,18 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let ffmpeg = find_ffmpeg();
-    let output_dir = default_output_dir();
+    let (settings, settings_error) = match Settings::load_or_create(default_output_dir()) {
+        Ok(settings) => (settings, None),
+        Err(error) => (
+            Settings {
+                language: "en-US".to_owned(),
+                output_dir: default_output_dir(),
+                fps: 30,
+            },
+            Some(error),
+        ),
+    };
+    let output_dir = settings.output_dir.clone();
     let token = load_or_create_token().unwrap_or_else(|_| new_token());
     let shared = AppState {
         ffmpeg: ffmpeg.clone(),
@@ -90,11 +95,14 @@ fn main() -> eframe::Result {
         })
         .ok();
 
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/recordscreen.png"))
+        .expect("embedded RecordScreen icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 680.0])
             .with_min_inner_size([640.0, 580.0])
-            .with_title("RecordScreen"),
+            .with_title("RecordScreen")
+            .with_icon(icon),
         ..Default::default()
     };
     eframe::run_native(
@@ -103,7 +111,11 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let cjk_font = load_traditional_chinese_font(&cc.egui_ctx);
             Ok(Box::new(RecorderApp::new(
-                shared, token, output_dir, cjk_font,
+                shared,
+                token,
+                settings,
+                cjk_font,
+                settings_error,
             )))
         }),
     )
@@ -111,6 +123,7 @@ fn main() -> eframe::Result {
 
 struct RecorderApp {
     shared: AppState,
+    settings: Settings,
     token: String,
     output_text: String,
     fps: u32,
@@ -121,22 +134,34 @@ struct RecorderApp {
     last_window_refresh: Instant,
     cjk_font: Option<String>,
     language: Language,
+    settings_needs_save: bool,
 }
 
 impl RecorderApp {
-    fn new(shared: AppState, token: String, output_dir: PathBuf, cjk_font: Option<String>) -> Self {
+    fn new(
+        shared: AppState,
+        token: String,
+        settings: Settings,
+        cjk_font: Option<String>,
+        settings_error: Option<String>,
+    ) -> Self {
+        let language = Language::from_code(&settings.language);
+        let settings_needs_save = settings_error.is_some();
         Self {
             shared,
             token,
-            output_text: output_dir.display().to_string(),
-            fps: 30,
-            status_message: Language::load().text("Ready", "準備就緒").into(),
+            output_text: settings.output_dir.display().to_string(),
+            fps: settings.fps,
+            status_message: settings_error
+                .unwrap_or_else(|| language.text("Ready", "準備就緒").to_owned()),
+            settings,
             ffmpeg: find_ffmpeg(),
             windows: windows_capture::enumerate_windows(),
             selected_hwnd: None,
             last_window_refresh: Instant::now(),
             cjk_font,
-            language: Language::load(),
+            language,
+            settings_needs_save,
         }
     }
 
@@ -157,15 +182,54 @@ impl RecorderApp {
     }
 
     fn ensure_output_dir(&self) -> Result<PathBuf, String> {
-        let path = PathBuf::from(self.output_text.trim());
-        if path.as_os_str().is_empty() {
-            return Err("請指定輸出資料夾".into());
-        }
+        let path = self.settings.output_dir.clone();
         std::fs::create_dir_all(&path).map_err(|e| format!("無法建立資料夾：{e}"))?;
-        if let Ok(mut current) = self.shared.output_dir.lock() {
-            *current = path.clone();
-        }
         Ok(path)
+    }
+
+    fn has_pending_settings(&self) -> bool {
+        self.settings_needs_save
+            || self.output_text.trim() != self.settings.output_dir.to_string_lossy()
+            || self.fps != self.settings.fps
+            || self.language.code() != self.settings.language
+    }
+
+    fn apply_settings(&mut self) {
+        let output_dir = PathBuf::from(self.output_text.trim());
+        if output_dir.as_os_str().is_empty() {
+            self.status_message = self
+                .language
+                .text("Choose an output folder.", "請指定輸出資料夾。")
+                .into();
+            return;
+        }
+        if let Err(error) = std::fs::create_dir_all(&output_dir) {
+            self.status_message = format!(
+                "{}: {error}",
+                self.language
+                    .text("Could not create output folder", "無法建立輸出資料夾")
+            );
+            return;
+        }
+        let settings = Settings {
+            language: self.language.code().to_owned(),
+            output_dir,
+            fps: self.fps,
+        };
+        if let Err(error) = settings.save() {
+            self.status_message = format!(
+                "{}: {error}",
+                self.language
+                    .text("Could not save settings", "無法儲存設定")
+            );
+            return;
+        }
+        if let Ok(mut current) = self.shared.output_dir.lock() {
+            *current = settings.output_dir.clone();
+        }
+        self.settings = settings;
+        self.settings_needs_save = false;
+        self.status_message = self.language.text("Settings applied", "設定已套用").into();
     }
 
     fn screenshot(&mut self) {
@@ -239,7 +303,7 @@ impl RecorderApp {
                 .into();
             return;
         }
-        match start_recording(&ffmpeg, &path, self.fps, self.selected_target()) {
+        match start_recording(&ffmpeg, &path, self.settings.fps, self.selected_target()) {
             Ok(child) => {
                 *recording = Some(RecordingProcess {
                     child,
@@ -280,7 +344,6 @@ impl RecorderApp {
 
 impl eframe::App for RecorderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let previous_language = self.language;
         ctx.request_repaint_after(Duration::from_secs(2));
         if self.last_window_refresh.elapsed() >= Duration::from_secs(3) {
             self.windows = windows_capture::enumerate_windows();
@@ -307,15 +370,6 @@ impl eframe::App for RecorderApp {
                         });
                 });
             });
-            if self.language != previous_language {
-                self.status_message = match self.language.save() {
-                    Ok(()) => self.language.text("Language changed", "語系已切換").into(),
-                    Err(error) => match self.language {
-                        Language::English => format!("Language changed, but could not save preference: {error}"),
-                        Language::TraditionalChinese => format!("語系已切換，但無法儲存設定：{error}"),
-                    },
-                };
-            }
             let lang = self.language;
             ui.label(lang.text("Windows screen recorder and screenshot tool", "Windows 螢幕錄影與截圖"));
             ui.add_space(8.0);
@@ -421,11 +475,23 @@ impl eframe::App for RecorderApp {
                 ui.add(egui::Slider::new(&mut self.fps, 10..=60).suffix(" FPS"));
             });
 
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!recording && self.has_pending_settings(), egui::Button::new(lang.text("Apply settings", "套用設定")))
+                    .clicked()
+                {
+                    self.apply_settings();
+                }
+                if self.has_pending_settings() {
+                    ui.small(lang.text("Unsaved changes — apply before capture", "設定尚未儲存，請先套用再擷取"));
+                }
+            });
+
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
-                        !recording && self.ffmpeg.is_some(),
+                        !recording && self.ffmpeg.is_some() && !self.has_pending_settings(),
                         egui::Button::new(lang.text("● Start recording", "● 開始錄影")),
                     )
                     .clicked()
@@ -439,7 +505,7 @@ impl eframe::App for RecorderApp {
                     self.stop_recording();
                 }
                 if ui
-                    .add_enabled(self.ffmpeg.is_some(), egui::Button::new(lang.text("▣ Take screenshot", "▣ 立即截圖")))
+                    .add_enabled(self.ffmpeg.is_some() && !self.has_pending_settings(), egui::Button::new(lang.text("▣ Take screenshot", "▣ 立即截圖")))
                     .clicked()
                 {
                     self.screenshot();
@@ -448,6 +514,10 @@ impl eframe::App for RecorderApp {
 
             ui.add_space(12.0);
             ui.label(&self.status_message);
+            ui.small(match lang {
+                Language::English => format!("Settings: {}", settings::settings_file().display()),
+                Language::TraditionalChinese => format!("設定檔：{}", settings::settings_file().display()),
+            });
             if let Some(font) = &self.cjk_font {
                 ui.small(match lang {
                     Language::English => format!("Chinese font: {font}"),
@@ -637,7 +707,9 @@ fn find_ffmpeg() -> Option<PathBuf> {
 
     #[cfg(windows)]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        if let Some(candidate) = find_winget_ffmpeg(&PathBuf::from(local_app_data).join("Microsoft/WinGet/Packages")) {
+        if let Some(candidate) =
+            find_winget_ffmpeg(&PathBuf::from(local_app_data).join("Microsoft/WinGet/Packages"))
+        {
             return Some(candidate);
         }
     }
@@ -746,14 +818,6 @@ fn token_file() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("RecordScreen")
         .join("agent-token.txt")
-}
-
-fn language_file() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("RecordScreen")
-        .join("language.txt")
 }
 
 fn load_or_create_token() -> Result<String, String> {

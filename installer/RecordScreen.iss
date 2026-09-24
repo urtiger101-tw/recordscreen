@@ -1,5 +1,5 @@
 #define AppName "RecordScreen"
-#define AppVersion "0.1.3"
+#define AppVersion "0.1.4"
 #define AppPublisher "urtiger101-tw"
 #define AppExeName "recordscreen.exe"
 #define FFmpegUrl "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z"
@@ -19,6 +19,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
 OutputBaseFilename=RecordScreen-Setup-{#AppVersion}-x64
 UninstallDisplayIcon={app}\{#AppExeName}
+SetupIconFile=..\assets\recordscreen.ico
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
