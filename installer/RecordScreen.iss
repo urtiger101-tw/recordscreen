@@ -1,5 +1,5 @@
 #define AppName "RecordScreen"
-#define AppVersion "0.1.4"
+#define AppVersion "0.1.7"
 #define AppPublisher "urtiger101-tw"
 #define AppExeName "recordscreen.exe"
 #define FFmpegUrl "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z"

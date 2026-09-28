@@ -2,6 +2,7 @@
 
 mod server;
 mod settings;
+mod ui;
 mod windows_capture;
 
 use eframe::egui;
@@ -18,6 +19,8 @@ use windows_capture::WindowTarget;
 
 #[derive(Clone, Serialize)]
 struct Status {
+    version: &'static str,
+    process_id: u32,
     recording: bool,
     recording_file: Option<String>,
     output_dir: String,
@@ -68,39 +71,59 @@ fn main() -> eframe::Result {
                 language: "en-US".to_owned(),
                 output_dir: default_output_dir(),
                 fps: 30,
+                countdown_seconds: 0,
             },
             Some(error),
         ),
     };
     let output_dir = settings.output_dir.clone();
-    let token = load_or_create_token().unwrap_or_else(|_| new_token());
+    let (token, token_error) = match load_or_create_token() {
+        Ok(token) => (token, None),
+        Err(error) => (
+            new_token(),
+            Some(format!("Cannot load the Agent token: {error}")),
+        ),
+    };
     let shared = AppState {
         ffmpeg: ffmpeg.clone(),
         output_dir: Arc::new(Mutex::new(output_dir.clone())),
         recording: Arc::new(Mutex::new(None)),
+        finished_recordings: Arc::new(Mutex::new(Vec::new())),
         selected_target: Arc::new(Mutex::new(None)),
         token: Arc::new(token.clone()),
+        api_status: Arc::new(Mutex::new(server::ApiStatus::Starting)),
     };
 
-    let server_state = shared.clone();
-    std::thread::Builder::new()
-        .name("agent-control-api".into())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build();
-            if let Ok(runtime) = runtime {
-                runtime.block_on(server::serve(server_state));
-            }
-        })
-        .ok();
+    if let Some(error) = token_error {
+        shared.set_api_status(server::ApiStatus::Failed(error));
+    } else {
+        let server_state = shared.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("agent-control-api".into())
+            .spawn(move || {
+                match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(server::serve(server_state)),
+                    Err(error) => server_state.set_api_status(server::ApiStatus::Failed(format!(
+                        "Cannot start Agent API runtime: {error}"
+                    ))),
+                }
+            })
+        {
+            shared.set_api_status(server::ApiStatus::Failed(format!(
+                "Cannot start Agent API thread: {error}"
+            )));
+        }
+    }
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/recordscreen.png"))
         .expect("embedded RecordScreen icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 680.0])
-            .with_min_inner_size([640.0, 580.0])
+            .with_inner_size([1040.0, 740.0])
+            .with_min_inner_size([760.0, 600.0])
             .with_title("RecordScreen")
             .with_icon(icon),
         ..Default::default()
@@ -110,6 +133,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let cjk_font = load_traditional_chinese_font(&cc.egui_ctx);
+            ui::configure_theme(&cc.egui_ctx);
             Ok(Box::new(RecorderApp::new(
                 shared,
                 token,
@@ -127,6 +151,8 @@ struct RecorderApp {
     token: String,
     output_text: String,
     fps: u32,
+    countdown_seconds: u32,
+    countdown_deadline: Option<Instant>,
     status_message: String,
     ffmpeg: Option<PathBuf>,
     windows: Vec<WindowTarget>,
@@ -135,6 +161,24 @@ struct RecorderApp {
     cjk_font: Option<String>,
     language: Language,
     settings_needs_save: bool,
+    page: AppPage,
+    recent_captures: Vec<CaptureItem>,
+    last_capture: Option<PathBuf>,
+    show_token: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppPage {
+    Capture,
+    Library,
+    Settings,
+    Agent,
+}
+
+struct CaptureItem {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
 }
 
 impl RecorderApp {
@@ -147,21 +191,29 @@ impl RecorderApp {
     ) -> Self {
         let language = Language::from_code(&settings.language);
         let settings_needs_save = settings_error.is_some();
+        let recent = recent_captures(&settings.output_dir);
+        let ffmpeg = shared.ffmpeg.clone();
         Self {
             shared,
             token,
             output_text: settings.output_dir.display().to_string(),
             fps: settings.fps,
+            countdown_seconds: settings.countdown_seconds,
+            countdown_deadline: None,
             status_message: settings_error
                 .unwrap_or_else(|| language.text("Ready", "準備就緒").to_owned()),
             settings,
-            ffmpeg: find_ffmpeg(),
+            ffmpeg,
             windows: windows_capture::enumerate_windows(),
             selected_hwnd: None,
             last_window_refresh: Instant::now(),
             cjk_font,
             language,
             settings_needs_save,
+            page: AppPage::Capture,
+            recent_captures: recent,
+            last_capture: None,
+            show_token: false,
         }
     }
 
@@ -191,7 +243,15 @@ impl RecorderApp {
         self.settings_needs_save
             || self.output_text.trim() != self.settings.output_dir.to_string_lossy()
             || self.fps != self.settings.fps
+            || self.countdown_seconds != self.settings.countdown_seconds
             || self.language.code() != self.settings.language
+    }
+
+    fn has_pending_capture_settings(&self) -> bool {
+        self.settings_needs_save
+            || self.output_text.trim() != self.settings.output_dir.to_string_lossy()
+            || self.fps != self.settings.fps
+            || self.countdown_seconds != self.settings.countdown_seconds
     }
 
     fn apply_settings(&mut self) {
@@ -215,6 +275,7 @@ impl RecorderApp {
             language: self.language.code().to_owned(),
             output_dir,
             fps: self.fps,
+            countdown_seconds: self.countdown_seconds,
         };
         if let Err(error) = settings.save() {
             self.status_message = format!(
@@ -227,9 +288,96 @@ impl RecorderApp {
         if let Ok(mut current) = self.shared.output_dir.lock() {
             *current = settings.output_dir.clone();
         }
+        if self.settings.output_dir != settings.output_dir {
+            self.last_capture = None;
+        }
         self.settings = settings;
         self.settings_needs_save = false;
+        self.refresh_library();
         self.status_message = self.language.text("Settings applied", "設定已套用").into();
+    }
+
+    fn refresh_library(&mut self) {
+        self.recent_captures = recent_captures(&self.settings.output_dir);
+        if let Ok(active) = self.shared.recording.lock() {
+            if let Some(recording) = active.as_ref() {
+                self.recent_captures
+                    .retain(|item| item.path != recording.path);
+            }
+        }
+    }
+
+    fn checked_target(&self) -> Result<Option<WindowTarget>, String> {
+        match self.selected_target() {
+            Some(target) => windows_capture::find_window(target.hwnd)
+                .filter(|active| target.is_same_window(active))
+                .map(Some)
+                .ok_or_else(|| {
+                    self.language
+                        .text(
+                            "Selected window is no longer available. Refresh and choose a source.",
+                            "選取的視窗已無法擷取，請重新整理並選擇來源。",
+                        )
+                        .to_owned()
+                }),
+            None => Ok(None),
+        }
+    }
+
+    fn request_recording(&mut self) {
+        if let Err(error) = self.checked_target() {
+            self.status_message = error;
+            return;
+        }
+        if self.countdown_seconds == 0 {
+            self.start_recording();
+        } else {
+            self.countdown_deadline =
+                Some(Instant::now() + Duration::from_secs(self.settings.countdown_seconds as u64));
+            self.status_message = self
+                .language
+                .text("Recording countdown started", "錄影倒數開始")
+                .into();
+        }
+    }
+
+    fn discard_settings(&mut self) {
+        self.output_text = self.settings.output_dir.display().to_string();
+        self.fps = self.settings.fps;
+        self.countdown_seconds = self.settings.countdown_seconds;
+        self.language = Language::from_code(&self.settings.language);
+        self.status_message = self
+            .language
+            .text("Unapplied changes discarded", "已捨棄未套用的變更")
+            .into();
+    }
+
+    fn poll_finished_recording(&mut self) {
+        server::clear_finished_recording(&self.shared);
+        let finished = self
+            .shared
+            .finished_recordings
+            .lock()
+            .map(|mut events| std::mem::take(&mut *events))
+            .unwrap_or_default();
+        for (path, success) in finished {
+            if success && path.is_file() {
+                self.last_capture = Some(path.clone());
+                self.refresh_library();
+                self.status_message = match self.language {
+                    Language::English => format!("Recording saved: {}", path.display()),
+                    Language::TraditionalChinese => format!("錄影已完成：{}", path.display()),
+                };
+            } else {
+                self.status_message = self
+                    .language
+                    .text(
+                        "Recording ended unexpectedly. Check the capture source and FFmpeg.",
+                        "錄影意外結束，請檢查擷取來源與 FFmpeg。",
+                    )
+                    .into();
+            }
+        }
     }
 
     fn screenshot(&mut self) {
@@ -251,8 +399,17 @@ impl RecorderApp {
             }
         };
         let path = dir.join(format!("screenshot-{}.png", timestamp()));
-        match capture_screenshot(&ffmpeg, &path, self.selected_target()) {
+        let target = match self.checked_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.status_message = error;
+                return;
+            }
+        };
+        match capture_screenshot(&ffmpeg, &path, target) {
             Ok(()) => {
+                self.last_capture = Some(path.clone());
+                self.refresh_library();
                 self.status_message = match self.language {
                     Language::English => format!("Screenshot saved: {}", path.display()),
                     Language::TraditionalChinese => format!("截圖已儲存：{}", path.display()),
@@ -286,6 +443,13 @@ impl RecorderApp {
             }
         };
         let path = dir.join(format!("recording-{}.mp4", timestamp()));
+        let target = match self.checked_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.status_message = error;
+                return;
+            }
+        };
         let mut recording = match self.shared.recording.lock() {
             Ok(recording) => recording,
             Err(_) => {
@@ -303,7 +467,7 @@ impl RecorderApp {
                 .into();
             return;
         }
-        match start_recording(&ffmpeg, &path, self.settings.fps, self.selected_target()) {
+        match start_recording(&ffmpeg, &path, self.settings.fps, target) {
             Ok(child) => {
                 *recording = Some(RecordingProcess {
                     child,
@@ -327,6 +491,8 @@ impl RecorderApp {
     fn stop_recording(&mut self) {
         match server::stop_capture(&self.shared) {
             Ok(path) => {
+                self.last_capture = Some(path.clone());
+                self.refresh_library();
                 self.status_message = match self.language {
                     Language::English => format!("Recording saved: {}", path.display()),
                     Language::TraditionalChinese => format!("錄影已完成：{}", path.display()),
@@ -342,216 +508,34 @@ impl RecorderApp {
     }
 }
 
-impl eframe::App for RecorderApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_secs(2));
-        if self.last_window_refresh.elapsed() >= Duration::from_secs(3) {
-            self.windows = windows_capture::enumerate_windows();
-            self.last_window_refresh = Instant::now();
-        }
-        self.selected_hwnd = self.selected_target().map(|target| target.hwnd);
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(format!("RecordScreen v{}", env!("CARGO_PKG_VERSION")));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(match self.language {
-                            Language::English => "English",
-                            Language::TraditionalChinese => "繁體中文",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.language, Language::English, "English");
-                            ui.selectable_value(
-                                &mut self.language,
-                                Language::TraditionalChinese,
-                                "繁體中文",
-                            );
-                        });
-                });
-            });
-            let lang = self.language;
-            ui.label(lang.text("Windows screen recorder and screenshot tool", "Windows 螢幕錄影與截圖"));
-            ui.add_space(8.0);
-
-            let recording = self.recording();
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(lang.text("Status", "狀態"));
-                    ui.strong(if recording {
-                        lang.text("● Recording", "● 錄影中")
-                    } else {
-                        lang.text("● Idle", "● 閒置")
-                    });
-                });
-                if recording {
-                    if let Ok(guard) = self.shared.recording.lock() {
-                        if let Some(rec) = guard.as_ref() {
-                            let seconds = rec.started.elapsed().as_secs();
-                            ui.label(match lang {
-                                Language::English => format!("Recorded {seconds} seconds"),
-                                Language::TraditionalChinese => format!("已錄影 {seconds} 秒"),
-                            });
-                            ui.small(rec.path.display().to_string());
-                        }
-                    }
-                }
-            });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(lang.text("Capture source", "錄影來源"));
-                let selected_name = match self.selected_hwnd {
-                    Some(hwnd) => self
-                        .windows
-                        .iter()
-                        .find(|window| window.hwnd == hwnd)
-                        .map(|window| {
-                            format!(
-                                "{}  (PID {}, HWND 0x{:x})",
-                                window.title, window.process_id, window.hwnd
-                            )
-                        })
-                        .unwrap_or_else(|| lang.text("Window closed; refresh the list", "原視窗已關閉，請重新整理").into()),
-                    None => lang.text("Entire desktop", "整個桌面").into(),
-                };
-                if recording {
-                    ui.label(selected_name);
-                } else {
-                    egui::ComboBox::from_id_salt("capture-window")
-                        .selected_text(selected_name)
-                        .width(460.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.selected_hwnd, None, lang.text("Entire desktop", "整個桌面"));
-                            egui::ScrollArea::vertical()
-                                .max_height(260.0)
-                                .show(ui, |ui| {
-                                    for window in &self.windows {
-                                        ui.selectable_value(
-                                            &mut self.selected_hwnd,
-                                            Some(window.hwnd),
-                                            format!(
-                                                "{}  (PID {}, HWND 0x{:x})",
-                                                window.title, window.process_id, window.hwnd
-                                            ),
-                                        );
-                                    }
-                                });
-                        });
-                    if ui.button(lang.text("Refresh windows", "重新整理視窗")).clicked() {
-                        self.windows = windows_capture::enumerate_windows();
-                        self.last_window_refresh = Instant::now();
-                    }
-                }
-            });
-            if self.windows.is_empty() {
-                ui.small(lang.text("No capturable app windows found. Make sure the target app is open and not minimized.", "目前找不到可擷取的 app 視窗，請確認目標 app 已開啟且未最小化。"));
+fn recent_captures(dir: &Path) -> Vec<CaptureItem> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut items: Vec<CaptureItem> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            let is_capture = (name.starts_with("recording-") && name.ends_with(".mp4"))
+                || (name.starts_with("screenshot-") && name.ends_with(".png"));
+            if !is_capture {
+                return None;
             }
-            ui.small(lang.text("When an app is selected, screenshots and recordings capture only that window. The source cannot be changed while recording.", "指定 app 後，錄影與截圖都只擷取該視窗；錄影期間不可切換來源。"));
-
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.label(lang.text("Output folder", "輸出資料夾"));
-                ui.text_edit_singleline(&mut self.output_text);
-            });
-
-            let visible_hwnd = self.selected_hwnd;
-            if let Ok(recording_state) = self.shared.recording.lock() {
-                if recording_state.is_none() {
-                    if let Ok(mut selected) = self.shared.selected_target.lock() {
-                        if selected.as_ref().map(|window| window.hwnd) != visible_hwnd {
-                            *selected = visible_hwnd.and_then(|hwnd| {
-                                self.windows
-                                    .iter()
-                                    .find(|window| window.hwnd == hwnd)
-                                    .cloned()
-                            });
-                        }
-                    }
-                }
+            let metadata = entry.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
             }
-            ui.horizontal(|ui| {
-                ui.label(lang.text("Frame rate", "影格率"));
-                ui.add(egui::Slider::new(&mut self.fps, 10..=60).suffix(" FPS"));
-            });
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!recording && self.has_pending_settings(), egui::Button::new(lang.text("Apply settings", "套用設定")))
-                    .clicked()
-                {
-                    self.apply_settings();
-                }
-                if self.has_pending_settings() {
-                    ui.small(lang.text("Unsaved changes — apply before capture", "設定尚未儲存，請先套用再擷取"));
-                }
-            });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !recording && self.ffmpeg.is_some() && !self.has_pending_settings(),
-                        egui::Button::new(lang.text("● Start recording", "● 開始錄影")),
-                    )
-                    .clicked()
-                {
-                    self.start_recording();
-                }
-                if ui
-                    .add_enabled(recording, egui::Button::new(lang.text("■ Stop recording", "■ 停止錄影")))
-                    .clicked()
-                {
-                    self.stop_recording();
-                }
-                if ui
-                    .add_enabled(self.ffmpeg.is_some() && !self.has_pending_settings(), egui::Button::new(lang.text("▣ Take screenshot", "▣ 立即截圖")))
-                    .clicked()
-                {
-                    self.screenshot();
-                }
-            });
-
-            ui.add_space(12.0);
-            ui.label(&self.status_message);
-            ui.small(match lang {
-                Language::English => format!("Settings: {}", settings::settings_file().display()),
-                Language::TraditionalChinese => format!("設定檔：{}", settings::settings_file().display()),
-            });
-            if let Some(font) = &self.cjk_font {
-                ui.small(match lang {
-                    Language::English => format!("Chinese font: {font}"),
-                    Language::TraditionalChinese => format!("中文字型：{font}"),
-                });
-            } else {
-                ui.colored_label(
-                    egui::Color32::YELLOW,
-                    "Chinese font missing. Install Windows Traditional Chinese fonts.",
-                );
-            }
-            if self.ffmpeg.is_none() {
-                ui.colored_label(egui::Color32::RED, lang.text(
-                    "FFmpeg not found. Re-run Setup and check Download FFmpeg under Capture dependency.",
-                    "找不到 FFmpeg。請重新執行安裝程式，並勾選「Capture dependency」下的 FFmpeg 下載選項。",
-                ));
-            } else if let Some(path) = &self.ffmpeg {
-                ui.small(format!("FFmpeg：{}", path.display()));
-            }
-
-            ui.separator();
-            ui.heading(lang.text("Agent Control API", "Agent 控制 API"));
-            ui.label(lang.text("The API listens only on 127.0.0.1:17321. Share the token below only with trusted local agents.", "API 僅監聽本機 127.0.0.1:17321；請將下方 Token 提供給受信任的本機 Agent。"));
-            ui.monospace(format!("Bearer {0}", self.token));
-            ui.small(lang.text("Token file: ", "Token 設定檔：").to_owned() + &token_file().display().to_string());
-            ui.small(lang.text("See README.md for API details and PowerShell examples.", "API 說明與可直接使用的 PowerShell 範例請見 README.md。"));
-        });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if self.recording() {
-            let _ = server::stop_capture(&self.shared);
-        }
-    }
+            Some(CaptureItem {
+                path,
+                size: metadata.len(),
+                modified: metadata.modified().unwrap_or(UNIX_EPOCH),
+            })
+        })
+        .collect();
+    items.sort_by(|left, right| right.modified.cmp(&left.modified));
+    items.truncate(30);
+    items
 }
 
 fn capture_screenshot(
@@ -867,6 +851,8 @@ fn current_status(state: &AppState) -> Status {
         .ok()
         .and_then(|target| target.clone());
     Status {
+        version: env!("CARGO_PKG_VERSION"),
+        process_id: std::process::id(),
         recording: recording_file.is_some(),
         recording_file,
         output_dir,

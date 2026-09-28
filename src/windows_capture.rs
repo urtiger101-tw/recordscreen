@@ -7,6 +7,12 @@ pub struct WindowTarget {
     pub process_id: u32,
 }
 
+impl WindowTarget {
+    pub fn is_same_window(&self, other: &Self) -> bool {
+        self.hwnd == other.hwnd && self.process_id == other.process_id
+    }
+}
+
 #[cfg(windows)]
 pub fn enumerate_windows() -> Vec<WindowTarget> {
     use windows_sys::Win32::{
@@ -73,4 +79,26 @@ pub fn enumerate_windows() -> Vec<WindowTarget> {
 #[cfg(not(windows))]
 pub fn find_window(_hwnd: usize) -> Option<WindowTarget> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowTarget;
+
+    #[test]
+    fn changing_document_title_keeps_target_but_reused_handle_does_not() {
+        let selected = WindowTarget {
+            hwnd: 42,
+            process_id: 100,
+            title: "Document 1".into(),
+        };
+        let mut current = selected.clone();
+        current.title = "Document 2 - edited".into();
+        assert!(selected.is_same_window(&current));
+        current.process_id = 101;
+        assert!(!selected.is_same_window(&current));
+        current.process_id = 100;
+        current.hwnd = 43;
+        assert!(!selected.is_same_window(&current));
+    }
 }

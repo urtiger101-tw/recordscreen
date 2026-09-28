@@ -17,6 +17,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release executable
         run: cargo build --release
+      - name: Verify standalone Windows runtime linkage
+        shell: pwsh
+        run: ./scripts/check-runtime-dependencies.ps1
       - name: Install Inno Setup 7
         shell: pwsh
         run: winget install --id JRSoftware.InnoSetup.7 --exact --silent --accept-package-agreements --accept-source-agreements

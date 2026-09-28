@@ -24,8 +24,25 @@ pub struct AppState {
     pub ffmpeg: Option<PathBuf>,
     pub output_dir: Arc<Mutex<PathBuf>>,
     pub recording: Arc<Mutex<Option<RecordingProcess>>>,
+    pub finished_recordings: Arc<Mutex<Vec<(PathBuf, bool)>>>,
     pub selected_target: Arc<Mutex<Option<WindowTarget>>>,
     pub token: Arc<String>,
+    pub api_status: Arc<Mutex<ApiStatus>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ApiStatus {
+    Starting,
+    Listening,
+    Failed(String),
+}
+
+impl AppState {
+    pub fn set_api_status(&self, status: ApiStatus) {
+        if let Ok(mut current) = self.api_status.lock() {
+            *current = status;
+        }
+    }
 }
 
 pub struct RecordingProcess {
@@ -67,6 +84,10 @@ struct WindowsResponse {
 }
 
 pub async fn serve(state: AppState) {
+    serve_at(state, "127.0.0.1:17321").await;
+}
+
+async fn serve_at(state: AppState, address: &str) {
     let protected = Router::new()
         .route("/api/v1/status", get(status))
         .route("/api/v1/windows", get(list_windows))
@@ -81,8 +102,18 @@ pub async fn serve(state: AppState) {
         .merge(protected)
         .layer(middleware::from_fn(check_local_request));
 
-    if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:17321").await {
-        let _ = axum::serve(listener, app).await;
+    let listener = match tokio::net::TcpListener::bind(address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            state.set_api_status(ApiStatus::Failed(format!(
+                "Cannot listen on {address}: {error}"
+            )));
+            return;
+        }
+    };
+    state.set_api_status(ApiStatus::Listening);
+    if let Err(error) = axum::serve(listener, app).await {
+        state.set_api_status(ApiStatus::Failed(format!("Agent API stopped: {error}")));
     }
 }
 
@@ -243,7 +274,7 @@ fn capture_target(state: &AppState) -> Result<Option<WindowTarget>, String> {
         .clone();
     match selected {
         Some(target) => windows_capture::find_window(target.hwnd)
-            .filter(|active| active.process_id == target.process_id && active.title == target.title)
+            .filter(|active| target.is_same_window(active))
             .map(Some)
             .ok_or_else(|| {
                 "selected app window is no longer available; refresh and select it again".into()
@@ -291,14 +322,19 @@ pub fn stop_capture(state: &AppState) -> Result<PathBuf, String> {
     }
 }
 
-fn clear_finished_recording(state: &AppState) {
-    if let Ok(mut guard) = state.recording.lock() {
-        if guard
-            .as_mut()
-            .and_then(|r| r.child.try_wait().ok().flatten())
-            .is_some()
-        {
-            guard.take();
+pub fn clear_finished_recording(state: &AppState) {
+    let Ok(mut guard) = state.recording.lock() else {
+        return;
+    };
+    let Some(status) = guard
+        .as_mut()
+        .and_then(|r| r.child.try_wait().ok().flatten())
+    else {
+        return;
+    };
+    if let Some(recording) = guard.take() {
+        if let Ok(mut finished) = state.finished_recordings.lock() {
+            finished.push((recording.path, status.success()));
         }
     }
 }
@@ -480,4 +516,27 @@ fn call_mcp_tool(client: &reqwest::blocking::Client, token: &str, params: &Value
 
 fn mcp_error(error: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": error }], "isError": true })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn occupied_port_is_reported_in_api_status() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = occupied.local_addr().unwrap().to_string();
+        let state = AppState {
+            ffmpeg: None,
+            output_dir: Arc::new(Mutex::new(PathBuf::new())),
+            recording: Arc::new(Mutex::new(None)),
+            finished_recordings: Arc::new(Mutex::new(Vec::new())),
+            selected_target: Arc::new(Mutex::new(None)),
+            token: Arc::new("test-only-token".into()),
+            api_status: Arc::new(Mutex::new(ApiStatus::Starting)),
+        };
+        serve_at(state.clone(), &address).await;
+        let result = state.api_status.lock().unwrap().clone();
+        assert!(matches!(result, ApiStatus::Failed(message) if message.contains(&address)));
+    }
 }
