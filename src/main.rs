@@ -5,7 +5,6 @@ mod settings;
 mod ui;
 mod windows_capture;
 
-use eframe::egui;
 use serde::Serialize;
 use server::{AppState, RecordingProcess};
 use settings::Settings;
@@ -58,7 +57,7 @@ impl Language {
     }
 }
 
-fn main() -> eframe::Result {
+fn main() -> Result<(), slint::PlatformError> {
     if std::env::args().any(|arg| arg == "--mcp") {
         server::run_mcp_stdio();
         return Ok(());
@@ -72,6 +71,7 @@ fn main() -> eframe::Result {
                 output_dir: default_output_dir(),
                 fps: 30,
                 countdown_seconds: 0,
+                minimize_to_tray: true,
             },
             Some(error),
         ),
@@ -118,31 +118,7 @@ fn main() -> eframe::Result {
         }
     }
 
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/recordscreen.png"))
-        .expect("embedded RecordScreen icon must be a valid PNG");
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 740.0])
-            .with_min_inner_size([760.0, 600.0])
-            .with_title("RecordScreen")
-            .with_icon(icon),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "RecordScreen",
-        options,
-        Box::new(move |cc| {
-            let cjk_font = load_traditional_chinese_font(&cc.egui_ctx);
-            ui::configure_theme(&cc.egui_ctx);
-            Ok(Box::new(RecorderApp::new(
-                shared,
-                token,
-                settings,
-                cjk_font,
-                settings_error,
-            )))
-        }),
-    )
+    ui::run(shared, token, settings, settings_error)
 }
 
 struct RecorderApp {
@@ -158,21 +134,11 @@ struct RecorderApp {
     windows: Vec<WindowTarget>,
     selected_hwnd: Option<usize>,
     last_window_refresh: Instant,
-    cjk_font: Option<String>,
     language: Language,
+    minimize_to_tray: bool,
     settings_needs_save: bool,
-    page: AppPage,
     recent_captures: Vec<CaptureItem>,
     last_capture: Option<PathBuf>,
-    show_token: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AppPage {
-    Capture,
-    Library,
-    Settings,
-    Agent,
 }
 
 struct CaptureItem {
@@ -186,7 +152,6 @@ impl RecorderApp {
         shared: AppState,
         token: String,
         settings: Settings,
-        cjk_font: Option<String>,
         settings_error: Option<String>,
     ) -> Self {
         let language = Language::from_code(&settings.language);
@@ -202,18 +167,16 @@ impl RecorderApp {
             countdown_deadline: None,
             status_message: settings_error
                 .unwrap_or_else(|| language.text("Ready", "準備就緒").to_owned()),
-            settings,
             ffmpeg,
             windows: windows_capture::enumerate_windows(),
             selected_hwnd: None,
             last_window_refresh: Instant::now(),
-            cjk_font,
             language,
+            minimize_to_tray: settings.minimize_to_tray,
             settings_needs_save,
-            page: AppPage::Capture,
             recent_captures: recent,
             last_capture: None,
-            show_token: false,
+            settings,
         }
     }
 
@@ -245,6 +208,7 @@ impl RecorderApp {
             || self.fps != self.settings.fps
             || self.countdown_seconds != self.settings.countdown_seconds
             || self.language.code() != self.settings.language
+            || self.minimize_to_tray != self.settings.minimize_to_tray
     }
 
     fn has_pending_capture_settings(&self) -> bool {
@@ -276,6 +240,7 @@ impl RecorderApp {
             output_dir,
             fps: self.fps,
             countdown_seconds: self.countdown_seconds,
+            minimize_to_tray: self.minimize_to_tray,
         };
         if let Err(error) = settings.save() {
             self.status_message = format!(
@@ -346,6 +311,7 @@ impl RecorderApp {
         self.fps = self.settings.fps;
         self.countdown_seconds = self.settings.countdown_seconds;
         self.language = Language::from_code(&self.settings.language);
+        self.minimize_to_tray = self.settings.minimize_to_tray;
         self.status_message = self
             .language
             .text("Unapplied changes discarded", "已捨棄未套用的變更")
@@ -533,7 +499,7 @@ fn recent_captures(dir: &Path) -> Vec<CaptureItem> {
             })
         })
         .collect();
-    items.sort_by(|left, right| right.modified.cmp(&left.modified));
+    items.sort_by_key(|item| std::cmp::Reverse(item.modified));
     items.truncate(30);
     items
 }
@@ -624,36 +590,6 @@ fn capture_input(target: Option<&WindowTarget>) -> String {
     target
         .map(|window| format!("hwnd=0x{:x}", window.hwnd))
         .unwrap_or_else(|| "desktop".into())
-}
-
-fn load_traditional_chinese_font(ctx: &egui::Context) -> Option<String> {
-    let font_dir = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts");
-    let candidates = ["msjh.ttc", "mingliu.ttc", "kaiu.ttf", "msyh.ttc"];
-    for filename in candidates {
-        let path = font_dir.join(filename);
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let mut fonts = egui::FontDefinitions::default();
-        let name = "windows-traditional-chinese".to_owned();
-        fonts.font_data.insert(
-            name.clone(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-        );
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .insert(0, name.clone());
-        }
-        ctx.set_fonts(fonts);
-        return Some(filename.to_owned());
-    }
-    None
 }
 
 #[cfg(windows)]

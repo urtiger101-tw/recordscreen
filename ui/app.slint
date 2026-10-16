@@ -1,0 +1,809 @@
+// RecordScreen compact UI. Rust owns all state; this file only projects it.
+import { ComboBox, LineEdit, Slider, Switch, ScrollView, ListView, AboutSlint } from "std-widgets.slint";
+
+export global Theme {
+    out property <color> bg: #0d121c;
+    out property <color> surface: #151c2a;
+    out property <color> surface-2: #1d2638;
+    out property <color> surface-3: #26324a;
+    out property <color> border: #2a354c;
+    out property <color> text: #e9eef7;
+    out property <color> muted: #8d9ab1;
+    out property <color> accent: #5b8def;
+    out property <color> accent-soft: #5b8def26;
+    out property <color> record: #f0505e;
+    out property <color> record-soft: #f0505e24;
+    out property <color> ok: #3ec98a;
+    out property <length> radius: 12px;
+}
+
+export global I18n {
+    in property <bool> zh;
+    public pure function t(en: string, zh-text: string) -> string {
+        return zh ? zh-text : en;
+    }
+}
+
+export struct CaptureRow {
+    name: string,
+    detail: string,
+    is-video: bool,
+}
+
+component Icon inherits Image {
+    width: 18px;
+    height: 18px;
+    image-fit: contain;
+    colorize: Theme.text;
+}
+
+// kind: 0 secondary, 1 primary, 2 danger, 3 ghost
+component Btn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> has-icon: true;
+    in property <string> text;
+    in property <string> tip: text;
+    in property <bool> enabled: true;
+    in property <int> kind: 0;
+    callback clicked;
+    property <bool> icon-only: text == "";
+    property <color> fill: kind == 1 ? Theme.accent : kind == 2 ? Theme.record : kind == 3 ? transparent : Theme.surface-3;
+    property <color> fg: kind == 1 || kind == 2 ? #ffffff : Theme.text;
+
+    height: 34px;
+    min-width: icon-only ? 34px : 0px;
+    border-radius: 9px;
+    background: !enabled ? Theme.surface-2 : ta.pressed ? fill.darker(25%) : ta.has-hover ? (kind == 3 ? Theme.surface-3 : fill.brighter(12%)) : fill;
+    opacity: enabled ? 1.0 : 0.55;
+    accessible-role: button;
+    accessible-label: tip;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    animate background { duration: 110ms; }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: icon-only ? 0px : 12px;
+        padding-right: icon-only ? 0px : 13px;
+        spacing: 7px;
+        alignment: center;
+        if has-icon: VerticalLayout {
+            alignment: center;
+            Icon { source: root.icon; colorize: root.enabled ? root.fg : Theme.muted; width: 16px; height: 16px; }
+        }
+        if !icon-only: Text {
+            text: root.text;
+            color: root.enabled ? root.fg : Theme.muted;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Large round transport button.
+component RoundBtn inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    in property <length> size: 44px;
+    in property <color> fill: Theme.surface-3;
+    in property <color> fg: Theme.text;
+    in property <length> icon-size: 20px;
+    callback clicked;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: !enabled ? Theme.surface-2 : ta.pressed ? fill.darker(25%) : ta.has-hover ? fill.brighter(14%) : fill;
+    opacity: enabled ? 1.0 : 0.5;
+    accessible-role: button;
+    accessible-label: tip;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    animate background { duration: 120ms; }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        source: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        colorize: root.enabled ? root.fg : Theme.muted;
+    }
+}
+
+component Card inherits Rectangle {
+    in property <length> pad: 14px;
+    background: Theme.surface;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: root.pad;
+        spacing: 10px;
+        @children
+    }
+}
+
+component Caption inherits Text {
+    color: Theme.muted;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+component Muted inherits Text {
+    color: Theme.muted;
+    font-size: 12px;
+    wrap: word-wrap;
+}
+
+component TabItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 50px;
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-action-default => { clicked(); }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 42px;
+                height: 26px;
+                border-radius: 13px;
+                background: root.active ? Theme.accent-soft : ta.has-hover ? Theme.surface-2 : transparent;
+                animate background { duration: 120ms; }
+                Icon {
+                    source: root.icon;
+                    width: 18px;
+                    height: 18px;
+                    colorize: root.active ? Theme.accent : Theme.muted;
+                }
+            }
+        }
+        Text {
+            text: root.label;
+            horizontal-alignment: center;
+            font-size: 11px;
+            font-weight: root.active ? 700 : 500;
+            color: root.active ? Theme.text : Theme.muted;
+        }
+    }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: 6px;
+    Text { text: root.label; color: Theme.text; font-size: 12px; font-weight: 600; }
+    @children
+}
+
+export component AppWindow inherits Window {
+    title: "RecordScreen";
+    icon: @image-url("../assets/recordscreen.png");
+    preferred-width: 380px;
+    preferred-height: 600px;
+    min-width: 340px;
+    min-height: 500px;
+    background: Theme.bg;
+    default-font-family: "Microsoft JhengHei UI";
+    default-font-size: 13px;
+
+    in property <string> version;
+    in-out property <int> page: 0;
+
+    in property <bool> recording;
+    in property <bool> counting;
+    in property <bool> ffmpeg-ok;
+    in property <bool> pending-capture;
+    in property <bool> pending-settings;
+    in property <string> timer-text: "00:00:00";
+    in property <string> capture-summary;
+    in property <string> latest-name;
+
+    in property <[string]> sources;
+    in-out property <int> source-index;
+
+    in property <[CaptureRow]> library;
+
+    in-out property <string> output-text;
+    in-out property <float> fps: 30;
+    in-out property <int> countdown-index;
+    in-out property <int> language-index;
+    in-out property <bool> tray-enabled: true;
+    in property <string> settings-file;
+    in property <string> ffmpeg-path;
+
+    in property <int> api-state; // 0 starting, 1 listening, 2 failed
+    in property <string> api-error;
+    in property <string> token;
+    in-out property <bool> show-token;
+    in property <string> token-file;
+
+    in property <string> status;
+    in property <int> status-kind; // 0 info, 1 success, 2 error
+
+    callback toggle-record();
+    callback cancel-countdown();
+    callback screenshot();
+    callback open-folder();
+    callback reveal-latest();
+    callback reveal(int);
+    callback refresh-sources();
+    callback source-selected(int);
+    callback refresh-library();
+    callback browse();
+    callback apply-settings();
+    callback discard-settings();
+    callback copy-token();
+    callback page-changed(int);
+    callback hide-to-tray();
+
+    property <bool> busy: recording || counting;
+    property <bool> can-capture: ffmpeg-ok && !pending-capture && !busy;
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && event.modifiers.shift && (event.text == "s" || event.text == "S")) {
+                root.screenshot();
+                return accept;
+            }
+            if (event.modifiers.control && !event.modifiers.shift && (event.text == "r" || event.text == "R")) {
+                root.toggle-record();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            // ── Header ──────────────────────────────────────────────
+            Rectangle {
+                height: 52px;
+                background: Theme.bg;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 10px;
+                    spacing: 9px;
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("icons/logo.svg"); width: 26px; height: 26px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 0px;
+                        Text { text: "RecordScreen"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        Text { text: "v" + root.version; font-size: 10px; color: Theme.muted; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            height: 24px;
+                            width: chip.preferred-width;
+                            border-radius: 12px;
+                            background: root.recording ? Theme.record-soft : Theme.accent-soft;
+                            chip := HorizontalLayout {
+                                padding-left: 9px;
+                                padding-right: 10px;
+                                spacing: 6px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    dot := Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 3.5px;
+                                        background: root.recording ? Theme.record : root.counting ? #f2b84b : Theme.ok;
+                                    }
+                                }
+                                Text {
+                                    vertical-alignment: center;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: root.recording ? Theme.record : Theme.text;
+                                    text: root.recording ? I18n.t("REC", "錄影中") : root.counting ? I18n.t("COUNTDOWN", "倒數中") : I18n.t("READY", "就緒");
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Btn {
+                            kind: 3;
+                            icon: @image-url("icons/tray.svg");
+                            tip: I18n.t("Hide to tray", "縮至系統匣");
+                            clicked => { root.hide-to-tray(); }
+                        }
+                    }
+                }
+            }
+
+            // ── Pages ───────────────────────────────────────────────
+            Rectangle {
+                vertical-stretch: 1;
+
+                if root.page == 0: ScrollView {
+                    VerticalLayout {
+                        padding: 14px;
+                        padding-top: 4px;
+                        spacing: 12px;
+
+                        Card {
+                            pad: 18px;
+                            HorizontalLayout {
+                                alignment: center;
+                                Caption {
+                                    text: root.recording ? I18n.t("RECORDING", "正在錄影") : root.counting ? I18n.t("STARTING IN", "即將開始") : I18n.t("READY TO CAPTURE", "準備擷取");
+                                    color: root.recording ? Theme.record : Theme.muted;
+                                }
+                            }
+                            Text {
+                                text: root.timer-text;
+                                horizontal-alignment: center;
+                                font-size: 38px;
+                                font-weight: 300;
+                                font-family: "Cascadia Mono";
+                                color: root.recording ? Theme.text : root.counting ? #f2b84b : Theme.text;
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 18px;
+                                padding-top: 4px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    RoundBtn {
+                                        icon: @image-url("icons/camera.svg");
+                                        tip: I18n.t("Screenshot (Ctrl+Shift+S)", "截圖（Ctrl+Shift+S）");
+                                        enabled: root.can-capture;
+                                        clicked => { root.screenshot(); }
+                                    }
+                                }
+                                Rectangle {
+                                    width: 72px;
+                                    height: 72px;
+                                    border-radius: 36px;
+                                    background: root.recording ? Theme.record-soft : transparent;
+                                    border-width: 2px;
+                                    border-color: root.recording || root.counting ? Theme.record : Theme.border;
+                                    RoundBtn {
+                                        size: 58px;
+                                        icon-size: root.recording ? 20px : 24px;
+                                        fill: Theme.record;
+                                        fg: #ffffff;
+                                        icon: root.recording || root.counting ? @image-url("icons/stop.svg") : @image-url("icons/record.svg");
+                                        tip: root.recording ? I18n.t("Stop recording (Ctrl+R)", "停止錄影（Ctrl+R）") : root.counting ? I18n.t("Cancel countdown", "取消倒數") : I18n.t("Start recording (Ctrl+R)", "開始錄影（Ctrl+R）");
+                                        enabled: root.busy || root.can-capture;
+                                        clicked => {
+                                            if (root.counting) { root.cancel-countdown(); } else { root.toggle-record(); }
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    RoundBtn {
+                                        icon: @image-url("icons/folder.svg");
+                                        tip: I18n.t("Open output folder", "開啟輸出資料夾");
+                                        clicked => { root.open-folder(); }
+                                    }
+                                }
+                            }
+                            Muted {
+                                text: root.capture-summary;
+                                horizontal-alignment: center;
+                                wrap: no-wrap;
+                                overflow: elide;
+                            }
+                        }
+
+                        Card {
+                            HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout { alignment: center; Icon { source: root.source-index > 0 ? @image-url("icons/window.svg") : @image-url("icons/desktop.svg"); colorize: Theme.muted; } }
+                                Caption { text: I18n.t("CAPTURE SOURCE", "擷取來源"); vertical-alignment: center; horizontal-stretch: 1; }
+                                Btn {
+                                    kind: 3;
+                                    icon: @image-url("icons/refresh.svg");
+                                    tip: I18n.t("Refresh windows", "重新整理視窗");
+                                    enabled: !root.busy;
+                                    height: 28px;
+                                    min-width: 28px;
+                                    clicked => { root.refresh-sources(); }
+                                }
+                            }
+                            ComboBox {
+                                model: root.sources;
+                                current-index <=> root.source-index;
+                                enabled: !root.busy;
+                                selected => { root.source-selected(self.current-index); }
+                            }
+                            Muted {
+                                text: root.busy ? I18n.t("Source is locked while recording.", "錄影期間來源會鎖定。") : I18n.t("Keep the target window open and not minimized.", "目標視窗須保持開啟且勿最小化。");
+                            }
+                        }
+
+                        if root.pending-capture: Rectangle {
+                            background: Theme.accent-soft;
+                            border-radius: 10px;
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 8px;
+                                Text {
+                                    text: I18n.t("Settings changed — apply before capturing.", "設定已變更，擷取前請先套用。");
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Btn {
+                                    kind: 1;
+                                    has-icon: false;
+                                    text: I18n.t("Apply", "套用");
+                                    enabled: !root.busy;
+                                    clicked => { root.apply-settings(); }
+                                }
+                            }
+                        }
+
+                        if !root.ffmpeg-ok: Rectangle {
+                            background: Theme.record-soft;
+                            border-radius: 10px;
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 8px;
+                                VerticalLayout { alignment: start; Icon { source: @image-url("icons/alert.svg"); colorize: Theme.record; } }
+                                Text {
+                                    text: I18n.t("FFmpeg is unavailable. Re-run Setup and select Download FFmpeg.", "FFmpeg 無法使用。請重新執行安裝程式並選擇下載 FFmpeg。");
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        Card {
+                            Caption { text: I18n.t("LATEST CAPTURE", "最近成果"); }
+                            if root.latest-name == "": Muted {
+                                text: I18n.t("Recordings and screenshots will appear here.", "完成的錄影與截圖會顯示在這裡。");
+                            }
+                            if root.latest-name != "": HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout { alignment: center; Icon { source: @image-url("icons/film.svg"); colorize: Theme.accent; } }
+                                Text {
+                                    text: root.latest-name;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Btn {
+                                    kind: 3;
+                                    icon: @image-url("icons/reveal.svg");
+                                    tip: I18n.t("Show in Explorer", "在檔案總管中顯示");
+                                    height: 28px;
+                                    min-width: 28px;
+                                    clicked => { root.reveal-latest(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.page == 1: VerticalLayout {
+                    padding: 14px;
+                    padding-top: 4px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: I18n.t("Library", "檔案庫"); font-size: 17px; font-weight: 700; color: Theme.text; }
+                            Muted { text: I18n.t("Latest 30 files in the output folder", "輸出資料夾最近 30 個檔案"); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            Btn { kind: 3; icon: @image-url("icons/refresh.svg"); tip: I18n.t("Refresh library", "重新整理檔案庫"); clicked => { root.refresh-library(); } }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Btn { kind: 3; icon: @image-url("icons/folder.svg"); tip: I18n.t("Open output folder", "開啟輸出資料夾"); clicked => { root.open-folder(); } }
+                        }
+                    }
+                    if root.library.length == 0: Card {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            HorizontalLayout { alignment: center; Icon { source: @image-url("icons/library.svg"); width: 34px; height: 34px; colorize: Theme.surface-3; } }
+                            Muted { text: I18n.t("No RecordScreen captures in this folder yet.", "此資料夾目前沒有 RecordScreen 擷取檔。"); horizontal-alignment: center; }
+                        }
+                    }
+                    if root.library.length > 0: ListView {
+                        vertical-stretch: 1;
+                        for row[index] in root.library: Rectangle {
+                            height: 52px;
+                            row-ta := TouchArea {
+                                double-clicked => { root.reveal(index); }
+                            }
+                            Rectangle {
+                                x: 0px;
+                                y: 2px;
+                                width: parent.width;
+                                height: parent.height - 4px;
+                                border-radius: 10px;
+                                background: row-ta.has-hover ? Theme.surface-2 : Theme.surface;
+                                animate background { duration: 100ms; }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 6px;
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 30px;
+                                            height: 30px;
+                                            border-radius: 8px;
+                                            background: row.is-video ? Theme.record-soft : Theme.accent-soft;
+                                            Icon {
+                                                source: row.is-video ? @image-url("icons/film.svg") : @image-url("icons/image.svg");
+                                                width: 16px;
+                                                height: 16px;
+                                                colorize: row.is-video ? Theme.record : Theme.accent;
+                                            }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 1;
+                                        Text { text: row.name; color: Theme.text; overflow: elide; font-size: 12px; }
+                                        Text { text: row.detail; color: Theme.muted; font-size: 11px; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Btn {
+                                            kind: 3;
+                                            icon: @image-url("icons/reveal.svg");
+                                            tip: I18n.t("Show in Explorer", "在檔案總管中顯示");
+                                            height: 30px;
+                                            min-width: 30px;
+                                            clicked => { root.reveal(index); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.page == 2: ScrollView {
+                    VerticalLayout {
+                        padding: 14px;
+                        padding-top: 4px;
+                        spacing: 12px;
+                        Card {
+                            Caption { text: I18n.t("OUTPUT", "輸出"); }
+                            Field {
+                                label: I18n.t("Output folder", "輸出資料夾");
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    LineEdit { text <=> root.output-text; horizontal-stretch: 1; }
+                                    Btn { icon: @image-url("icons/folder.svg"); tip: I18n.t("Browse…", "瀏覽…"); clicked => { root.browse(); } }
+                                }
+                            }
+                            Field {
+                                label: I18n.t("Frame rate", "影格率") + "  ·  " + Math.round(root.fps) + " FPS";
+                                Slider { minimum: 10; maximum: 60; step: 1; value <=> root.fps; }
+                            }
+                            Field {
+                                label: I18n.t("Start delay", "開始倒數");
+                                ComboBox {
+                                    model: [I18n.t("Off", "關閉"), "3 s", "5 s", "10 s"];
+                                    current-index <=> root.countdown-index;
+                                }
+                            }
+                        }
+                        Card {
+                            Caption { text: I18n.t("APP", "應用程式"); }
+                            Field {
+                                label: I18n.t("Language", "語系");
+                                ComboBox {
+                                    model: ["English", "繁體中文"];
+                                    current-index <=> root.language-index;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: I18n.t("Minimize to tray", "最小化至系統匣"); color: Theme.text; font-size: 12px; font-weight: 600; }
+                                    Muted { text: I18n.t("Keeps the Agent API running in the background.", "隱藏視窗，Agent API 於背景持續運作。"); }
+                                }
+                                VerticalLayout { alignment: center; Switch { checked <=> root.tray-enabled; } }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Btn {
+                                kind: 1;
+                                icon: @image-url("icons/check.svg");
+                                text: I18n.t("Apply", "套用設定");
+                                enabled: !root.busy && root.pending-settings;
+                                clicked => { root.apply-settings(); }
+                            }
+                            Btn {
+                                has-icon: false;
+                                text: I18n.t("Discard", "捨棄變更");
+                                enabled: !root.counting && root.pending-settings;
+                                clicked => { root.discard-settings(); }
+                            }
+                            Text {
+                                text: root.pending-settings ? I18n.t("Unsaved changes", "尚未儲存") : I18n.t("All saved", "已儲存");
+                                color: Theme.muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        Card {
+                            Caption { text: I18n.t("DIAGNOSTICS", "診斷資訊"); }
+                            Muted { text: I18n.t("Settings file", "設定檔") + ": " + root.settings-file; }
+                            Text {
+                                text: root.ffmpeg-ok ? "FFmpeg: " + root.ffmpeg-path : I18n.t("FFmpeg not found", "找不到 FFmpeg");
+                                color: root.ffmpeg-ok ? Theme.ok : Theme.record;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        Card {
+                            Caption { text: I18n.t("ABOUT", "關於"); }
+                            AboutSlint { height: 140px; }
+                        }
+                    }
+                }
+
+                if root.page == 3: ScrollView {
+                    VerticalLayout {
+                        padding: 14px;
+                        padding-top: 4px;
+                        spacing: 12px;
+                        Card {
+                            Caption { text: I18n.t("LOCAL API", "本機 API"); }
+                            Text { text: "http://127.0.0.1:17321"; color: Theme.text; font-family: "Cascadia Mono"; font-size: 13px; }
+                            HorizontalLayout {
+                                spacing: 7px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: root.api-state == 1 ? Theme.ok : root.api-state == 2 ? Theme.record : #f2b84b;
+                                    }
+                                }
+                                Text {
+                                    text: root.api-state == 1 ? I18n.t("Listening — ready for agents", "已啟動，可供 Agent 連線") : root.api-state == 2 ? I18n.t("Agent API unavailable", "Agent API 無法使用") : I18n.t("Starting…", "啟動中…");
+                                    color: root.api-state == 2 ? Theme.record : Theme.text;
+                                    font-size: 12px;
+                                }
+                            }
+                            if root.api-state == 2: Muted {
+                                text: root.api-error + "\n" + I18n.t("Check for another RecordScreen instance or an occupied port, then restart.", "請檢查是否重複開啟 RecordScreen 或連接埠被占用，排除後重新啟動。");
+                            }
+                            Muted { text: I18n.t("Loopback connections only.", "僅接受本機連線。"); }
+                        }
+                        Card {
+                            Caption { text: I18n.t("ACCESS TOKEN", "存取 TOKEN"); }
+                            Rectangle {
+                                background: Theme.bg;
+                                border-radius: 8px;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 4px;
+                                    padding-top: 4px;
+                                    padding-bottom: 4px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: root.show-token ? root.token : "••••••••••••••••••••••••";
+                                        color: Theme.text;
+                                        font-family: "Cascadia Mono";
+                                        font-size: 11px;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Btn {
+                                        kind: 3;
+                                        icon: root.show-token ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+                                        tip: root.show-token ? I18n.t("Hide", "隱藏") : I18n.t("Show", "顯示");
+                                        height: 30px;
+                                        min-width: 30px;
+                                        clicked => { root.show-token = !root.show-token; }
+                                    }
+                                    Btn {
+                                        kind: 3;
+                                        icon: @image-url("icons/copy.svg");
+                                        tip: I18n.t("Copy token", "複製 Token");
+                                        height: 30px;
+                                        min-width: 30px;
+                                        clicked => { root.copy-token(); }
+                                    }
+                                }
+                            }
+                            Muted { text: I18n.t("Keep this token private.", "請妥善保管 Token。") + " " + I18n.t("Token file", "Token 檔案") + ": " + root.token-file; }
+                        }
+                        Card {
+                            Caption { text: I18n.t("AGENT TOOLS", "AGENT 工具"); }
+                            Text {
+                                text: I18n.t("Status · Window list · Select window · Screenshot · Start / stop recording", "狀態 · 視窗清單 · 選取視窗 · 截圖 · 開始／停止錄影");
+                                color: Theme.text;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            Muted { text: I18n.t("See README.md for API and MCP examples.", "API 與 MCP 範例請參閱 README.md。"); }
+                        }
+                    }
+                }
+            }
+
+            // ── Status line ─────────────────────────────────────────
+            Rectangle {
+                height: 26px;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 7px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: root.status-kind == 2 ? Theme.record : root.status-kind == 1 ? Theme.ok : Theme.accent;
+                        }
+                    }
+                    Text {
+                        text: root.status;
+                        color: root.status-kind == 2 ? Theme.record : Theme.muted;
+                        font-size: 11px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+
+            // ── Tab bar ─────────────────────────────────────────────
+            Rectangle {
+                background: Theme.surface;
+                Rectangle { y: 0px; height: 1px; background: Theme.border; }
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    TabItem { icon: @image-url("icons/capture.svg"); label: I18n.t("Capture", "擷取"); active: root.page == 0; clicked => { root.page = 0; root.page-changed(0); } }
+                    TabItem { icon: @image-url("icons/library.svg"); label: I18n.t("Library", "檔案庫"); active: root.page == 1; clicked => { root.page = 1; root.page-changed(1); } }
+                    TabItem { icon: @image-url("icons/settings.svg"); label: I18n.t("Settings", "設定"); active: root.page == 2; clicked => { root.page = 2; root.page-changed(2); } }
+                    TabItem { icon: @image-url("icons/agent.svg"); label: "Agent"; active: root.page == 3; clicked => { root.page = 3; root.page-changed(3); } }
+                }
+            }
+        }
+    }
+}

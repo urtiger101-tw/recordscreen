@@ -12,6 +12,12 @@ pub struct Settings {
     pub fps: u32,
     #[serde(default)]
     pub countdown_seconds: u32,
+    #[serde(default = "default_minimize_to_tray")]
+    pub minimize_to_tray: bool,
+}
+
+fn default_minimize_to_tray() -> bool {
+    true
 }
 
 impl Settings {
@@ -38,6 +44,7 @@ impl Settings {
                     output_dir: default_output_dir,
                     fps: 30,
                     countdown_seconds: 0,
+                    minimize_to_tray: true,
                 };
                 settings.save()?;
                 Ok(settings)
@@ -104,6 +111,7 @@ mod tests {
         let old = r#"{"language":"en-US","output_dir":"C:\\RecordScreen","fps":30}"#;
         let settings: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(settings.countdown_seconds, 0);
+        assert!(settings.minimize_to_tray);
         assert!(settings.validate().is_ok());
     }
 
@@ -114,6 +122,7 @@ mod tests {
             output_dir: "C:\\RecordScreen".into(),
             fps: 30,
             countdown_seconds: 7,
+            minimize_to_tray: true,
         };
         assert!(settings.validate().is_err());
     }
@@ -128,12 +137,14 @@ mod tests {
             output_dir: dir.path().join("captures"),
             fps: 60,
             countdown_seconds: 5,
+            minimize_to_tray: false,
         };
         settings.save_to(&path).unwrap();
         let saved: Settings = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.language, "zh-TW");
         assert_eq!(saved.fps, 60);
         assert_eq!(saved.countdown_seconds, 5);
+        assert!(!saved.minimize_to_tray);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
@@ -154,6 +165,7 @@ mod tests {
             output_dir: dir.path().join("captures"),
             fps: 30,
             countdown_seconds: 0,
+            minimize_to_tray: true,
         };
         assert!(settings.save_to(&path).is_err());
         drop(locked);
