@@ -9,13 +9,15 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 - FFmpeg 需包含 Windows `gdigrab` 輸入裝置與 `libx264` 編碼器。Windows 安裝程式會先檢查 PATH 與常見安裝位置；找不到時預設提供下載並安裝 FFmpeg。
 - 第一次啟動後，API 會監聽 `127.0.0.1:17321`；桌面 app 必須保持開啟，agent 才能呼叫。
 
-預設輸出位置：`%USERPROFILE%\Videos\RecordScreen`。可在 GUI 修改輸出資料夾。錄影預設 30 FPS，可在 GUI 調整 10–60 FPS。修改擷取設定後按「Apply settings／套用設定」才會儲存並套用；介面語系可先預覽，不影響錄影按鈕。介面使用 Windows 已安裝的微軟正黑體／新細明體，修正中文缺字問題。
+預設輸出位置：`%USERPROFILE%\Videos\RecordScreen`。可在 GUI 修改輸出資料夾。錄影預設 30 FPS，可在 GUI 調整 10–60 FPS。修改擷取設定後按「Apply settings／套用設定」才會儲存並套用；介面語系可先預覽，不影響錄影按鈕。介面字型預設使用 Windows 已安裝的「Microsoft JhengHei UI（微軟正黑體）」，不需另外安裝字型。
 
 在「Settings／設定」頁可切換 English／繁體中文。首次啟動預設 English。語系、輸出資料夾、FPS 和錄影倒數秒數儲存於 `%LOCALAPPDATA%\RecordScreen\setting.json`；若檔案不存在，啟動時自動建立。舊版設定檔未含倒數欄位時維持立即開始錄影；從更早版本升級且尚無 JSON 時，會從 `language.txt` 匯入語系。按「Apply settings／套用設定」後，下次啟動沿用。設定檔無法讀取時會顯示錯誤，保留原檔供修復。
 
-主介面分為擷取、檔案庫、設定與 Agent API 四頁。擷取頁提供 0／3／5／10 秒倒數、錄影計時、截圖與輸出資料夾捷徑；`Ctrl+R` 可在 RecordScreen 視窗有焦點時開始／停止錄影，`Ctrl+Shift+S` 可截圖。設定頁可用 Windows 原生資料夾選擇器選取輸出位置。檔案庫列出輸出資料夾中最近 30 個 RecordScreen 產出檔，可在檔案總管定位。Agent API 的 Token 預設隱藏，只有按「Show／顯示」才會出現在畫面上，也可按「Copy token／複製 Token」。
+主介面為緊湊視窗（預設 380×600，最小 340×500），底部分頁列以圖示切換擷取、檔案庫、設定與 Agent 四頁。擷取頁以大型計時器與圓形錄影／停止按鈕為中心，另有截圖與開啟輸出資料夾的圓形按鈕，並可用來源選單選擇整個桌面或指定視窗。倒數秒數（0／3／5／10 秒）與語系等設定於設定頁調整。`Ctrl+R` 可在 RecordScreen 視窗有焦點時開始／停止錄影，`Ctrl+Shift+S` 可截圖。設定頁可用 Windows 原生資料夾選擇器選取輸出位置，底部另有 About 區塊。檔案庫列出輸出資料夾中最近 30 個 RecordScreen 產出檔，可在檔案總管定位。Agent API 的 Token 預設隱藏，只有按「Show／顯示」才會出現在畫面上，也可按「Copy token／複製 Token」。
 
 主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。程式視窗、執行檔與安裝捷徑使用相同的 RecordScreen 圖示；圖示原始檔位於 `assets/recordscreen.ico`。
+
+系統匣：設定頁的「Minimize to tray／最小化至系統匣」預設開啟（儲存於 `setting.json` 的 `minimize_to_tray`）。開啟時，最小化視窗或按標題列的系統匣按鈕會將視窗隱藏至系統匣；左鍵點擊系統匣圖示即可還原視窗。系統匣選單提供「Show RecordScreen」、開始／停止錄影、截圖與結束。直接關閉視窗（X）會結束程式，若正在錄影會先停止錄影。
 
 v0.1.6 改善設定儲存與 Agent 連線診斷：設定會先寫入同目錄暫存檔並同步，再替換 `setting.json`；寫入或替換失敗時保留原設定。「Discard changes／捨棄變更」可恢復目前已套用的設定。Agent API 頁會顯示啟動、監聽或失敗狀態；連接埠占用或 Token 無法讀寫時會顯示原因。指定視窗以 HWND 與 PID 判斷，切換文件或瀏覽器分頁造成標題改變時仍可擷取；視窗關閉、最小化或已屬於其他程序時須重新選取。
 
@@ -41,7 +43,7 @@ FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/bui
 
 安裝程式會先尋找 PATH、WinGet、Scoop、Chocolatey 與常見 FFmpeg 目錄。若找不到，安裝精靈會預設勾選下載 FFmpeg 9.0.2 essentials（約 35 MB）；即使偵測到其他 FFmpeg，仍可手動勾選此項以修復。檔案會從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 以 HTTPS 下載，並在解壓前驗證固定的 SHA-256。FFmpeg 會放在 RecordScreen 安裝目錄的 `_ffmpeg_runtime`，不會修改系統 PATH；解除安裝 RecordScreen 時會一併移除這個目錄。若電腦目前離線，可取消勾選並稍後再安裝 FFmpeg。此下載由 Gyan.dev 提供，該版本依 GPLv3 發佈；本安裝程式不重新散佈 FFmpeg 二進位檔。
 
-無人值守安裝若需強制下載 FFmpeg，可加上 `/DOWNLOADFFMPEG`，例如 `RecordScreen-Setup-0.1.7-x64.exe /VERYSILENT /DOWNLOADFFMPEG`。
+無人值守安裝若需強制下載 FFmpeg，可加上 `/DOWNLOADFFMPEG`，例如 `RecordScreen-Setup-0.2.0-x64.exe /VERYSILENT /DOWNLOADFFMPEG`。
 
 自行從原始碼啟動時，仍須先安裝支援 `gdigrab` 與 `libx264` 的 FFmpeg，並放入 PATH 或程式同目錄。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
 
@@ -105,3 +107,7 @@ Release 使用 size optimization、LTO、單一 codegen unit、移除符號與 a
 ## 螢幕與隱私
 
 截圖和錄影會包含目前桌面上可見的內容；開始錄影前請確認畫面適合保存。檔案只寫入設定的本機輸出資料夾。此版本不錄製系統／麥克風音訊，也不提供遠端控制或網路監聽。
+
+## 授權
+
+RecordScreen 的圖形介面以 [Slint](https://slint.dev) 1.18.1 建置，依 Slint Royalty-free Desktop License 使用。依該授權條款要求，設定頁的 About 區塊以 AboutSlint 顯示 Slint 的授權與致謝資訊，請勿移除。
