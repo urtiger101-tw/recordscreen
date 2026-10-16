@@ -1,12 +1,12 @@
 [package]
 name = "recordscreen"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2021"
 description = "Windows desktop screen recorder with a local agent control API"
 
 [dependencies]
 axum = "0.8"
-eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg", "accessibility"] }
 rand = "0.9"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
@@ -17,9 +17,12 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 rfd = { version = "0.17.2", default-features = false }
+tray-icon = "0.24.2"
+arboard = { version = "3.6", default-features = false }
 
 [build-dependencies]
 winresource = "0.1.31"
+slint-build = "=1.18.1"
 
 [profile.release]
 opt-level = "z"

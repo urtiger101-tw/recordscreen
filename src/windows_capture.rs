@@ -27,7 +27,7 @@ pub fn enumerate_windows() -> Vec<WindowTarget> {
         EnumWindows(Some(collect_window), context);
     }
     windows.retain(|window| window.process_id != current_process_id);
-    windows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    windows.sort_by_key(|window| window.title.to_lowercase());
     windows
 }
 

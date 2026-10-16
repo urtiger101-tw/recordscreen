@@ -1,5 +1,10 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/recordscreen.ico");
+    slint_build::compile_with_config(
+        "ui/app.slint",
+        slint_build::CompilerConfiguration::new().with_style("fluent-dark".into()),
+    )
+    .expect("could not compile the Slint UI");
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
         assert!(
