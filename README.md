@@ -17,6 +17,8 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 
 主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。程式視窗、執行檔與安裝捷徑使用相同的 RecordScreen 圖示；圖示原始檔位於 `assets/recordscreen.ico`。
 
+可用 `Tab` 和 `Shift+Tab` 移動到具有焦點外框的控制項，再用 `Enter` 或 `Space` 操作按鈕或切換頁籤。
+
 系統匣：設定頁的「Minimize to tray／最小化至系統匣」預設開啟（儲存於 `setting.json` 的 `minimize_to_tray`）。開啟時，最小化視窗或按標題列的系統匣按鈕會將視窗隱藏至系統匣；左鍵點擊系統匣圖示即可還原視窗。系統匣選單提供「Show RecordScreen」、開始／停止錄影、截圖與結束。直接關閉視窗（X）會結束程式，若正在錄影會先停止錄影。
 
 v0.1.6 改善設定儲存與 Agent 連線診斷：設定會先寫入同目錄暫存檔並同步，再替換 `setting.json`；寫入或替換失敗時保留原設定。「Discard changes／捨棄變更」可恢復目前已套用的設定。Agent API 頁會顯示啟動、監聽或失敗狀態；連接埠占用或 Token 無法讀寫時會顯示原因。指定視窗以 HWND 與 PID 判斷，切換文件或瀏覽器分頁造成標題改變時仍可擷取；視窗關閉、最小化或已屬於其他程序時須重新選取。
@@ -25,17 +27,23 @@ v0.1.6 改善設定儲存與 Agent 連線診斷：設定會先寫入同目錄暫
 
 ## 建置與啟動
 
-安裝 Rust stable 與 FFmpeg，然後在本資料夾執行：
+在 Windows x64 安裝 Rust stable（MSVC 工具鏈）、Visual Studio Build Tools 的「使用 C++ 的桌面開發」工作負載，以及 FFmpeg。在專案根目錄執行下列命令。
 
 ```powershell
-cargo build --release
+cargo build --release --locked
 .\scripts\check-runtime-dependencies.ps1
 .\target\release\recordscreen.exe
 ```
 
-`.cargo/config.toml` 為 `x86_64-pc-windows-msvc` 啟用 `+crt-static`，請從專案根目錄建置，避免以環境變數 `RUSTFLAGS` 覆蓋此設定。`build.rs` 會拒絕缺少靜態 CRT 的 MSVC 建置；DLL 檢查腳本會透過 Visual Studio 的 `dumpbin.exe` 檢查產物，發現 VC++ 執行階段 DLL 依賴即停止。CI 在打包前執行同一項檢查。設定依據見 [Rust CRT 靜態連結文件](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes)。
+`.cargo/config.toml` 設定 `+crt-static`，讓 x64 執行檔可在沒有 VC++ Redistributable 的電腦上啟動。請保留該設定，避免以 `RUSTFLAGS` 覆蓋。DLL 檢查腳本使用 Visual Studio 的 `dumpbin.exe` 驗證連結結果。
 
 FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/)。請將 `bin` 資料夾加入使用者 `PATH`，或複製 `ffmpeg.exe` 至 `recordscreen.exe` 同一目錄。
+
+### 修改與驗證
+
+- 桌面畫面與互動位於 `ui/app.slint` 和 `src/ui.rs`。擷取流程位於 `src/main.rs` 和 `src/windows_capture.rs`。HTTP 與 MCP 共用 `src/server.rs`。
+- 提交前執行 `cargo fmt --all -- --check` 和 `cargo test --locked`。Windows PR 工作流程會再執行這兩項檢查、編譯 release 執行檔及安裝包，並附上安裝包的 SHA-256。
+- 若需要從乾淨狀態重新建置，可在專案根目錄執行 `cargo clean`。Cargo 產物位於 `target/`，歷次安裝包集中於 `dist/`。
 
 ## Windows 安裝程式
 
@@ -43,7 +51,7 @@ FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/bui
 
 安裝程式會先尋找 PATH、WinGet、Scoop、Chocolatey 與常見 FFmpeg 目錄。若找不到，安裝精靈會預設勾選下載 FFmpeg 9.0.2 essentials（約 35 MB）；即使偵測到其他 FFmpeg，仍可手動勾選此項以修復。檔案會從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 以 HTTPS 下載，並在解壓前驗證固定的 SHA-256。FFmpeg 會放在 RecordScreen 安裝目錄的 `_ffmpeg_runtime`，不會修改系統 PATH；解除安裝 RecordScreen 時會一併移除這個目錄。若電腦目前離線，可取消勾選並稍後再安裝 FFmpeg。此下載由 Gyan.dev 提供，該版本依 GPLv3 發佈；本安裝程式不重新散佈 FFmpeg 二進位檔。
 
-無人值守安裝若需強制下載 FFmpeg，可加上 `/DOWNLOADFFMPEG`，例如 `RecordScreen-Setup-0.2.0-x64.exe /VERYSILENT /DOWNLOADFFMPEG`。
+無人值守安裝若需強制下載 FFmpeg，請執行對應版本的安裝程式並加上 `/VERYSILENT /DOWNLOADFFMPEG`。
 
 自行從原始碼啟動時，仍須先安裝支援 `gdigrab` 與 `libx264` 的 FFmpeg，並放入 PATH 或程式同目錄。設定 MCP 時，server command 預設使用 `%LOCALAPPDATA%\Programs\RecordScreen\recordscreen.exe`。JSON 設定通常不會展開環境變數，請填入實際完整路徑。可用 PowerShell 取得：
 
@@ -51,7 +59,7 @@ FFmpeg Windows build 可使用 [gyan.dev builds](https://www.gyan.dev/ffmpeg/bui
 Join-Path $env:LOCALAPPDATA 'Programs\RecordScreen\recordscreen.exe'
 ```
 
-此安裝程式目前支援 Windows x64。從原始碼建置安裝包前，需先安裝 Inno Setup 7 並執行 `cargo build --release`，再以 Inno Setup Compiler 編譯 `installer\RecordScreen.iss`。
+本機打包時，請先完成上方的 release 建置與 DLL 檢查，再用 Inno Setup 7 的 `ISCC.exe` 編譯 `installer\RecordScreen.iss`。Inno Setup 會從已建置的執行檔讀取版本並產生 `dist\RecordScreen-Setup-<版本>-x64.exe`。也可手動執行 GitHub Actions 的 **Windows installer** 工作流程，從該次執行下載安裝包與雜湊。正式發布使用與 Cargo 版本相符的 `v<版本>` 標籤。
 
 ## Agent HTTP API
 
@@ -62,7 +70,7 @@ Agent 只應連線至 `http://127.0.0.1:17321`。GUI 的 Agent API 頁可按「S
 | GET | `/health` | 無認證健康狀態 |
 | GET | `/api/v1/status` | 讀取錄影狀態、輸出位置、app `version` 與 `process_id` |
 | GET | `/api/v1/windows` | 列出目前可選取的可見 app 視窗與 HWND |
-| POST | `/api/v1/target` | 指定視窗 `{ "hwnd": 1234 }`；傳 `{ "hwnd": null }` 切回整個桌面 |
+| POST | `/api/v1/target` | 必須提供 `hwnd`。數字指定視窗，明確傳 `null` 切回整個桌面 |
 | POST | `/api/v1/screenshot` | 擷取一張 PNG，回傳檔案路徑 |
 | POST | `/api/v1/recording/start` | 開始錄影，JSON body 可帶 `{"fps":30}`（10–60） |
 | POST | `/api/v1/recording/stop` | 停止錄影並完成 MP4 封裝 |
@@ -83,26 +91,23 @@ Invoke-RestMethod http://127.0.0.1:17321/api/v1/recording/stop -Method Post -Hea
 
 ## MCP agent 接入
 
-先開啟 RecordScreen GUI，再在 MCP client 設定中加入本機 stdio server。以 Codex CLI／桌面可讀取的 MCP 設定格式為例，將路徑換成實際的 release exe：
+先開啟 RecordScreen GUI。在 Codex CLI 或桌面的 `config.toml` 加入下列設定，將 `command` 換成已安裝執行檔的完整路徑，然後重新載入 Codex。
 
-```json
-{
-  "mcpServers": {
-    "recordscreen": {
-      "command": "C:\\Users\\YOUR_USER\\AppData\\Local\\Programs\\RecordScreen\\recordscreen.exe",
-      "args": ["--mcp"]
-    }
-  }
-}
+```toml
+[mcp_servers.recordscreen]
+command = 'C:\Users\YOUR_USER\AppData\Local\Programs\RecordScreen\recordscreen.exe'
+args = ['--mcp']
 ```
 
-MCP tools：`get_status`、`list_windows`、`select_window`、`take_screenshot`、`start_recording`（`fps` 可選）與 `stop_recording`。`select_window` 使用 `list_windows` 回傳的 HWND；傳入 `null` 可切回整個桌面。stdio 子程序會從同一個使用者設定檔讀取 token，再經過本機 API 呼叫 GUI app。關閉 GUI 後，MCP 工具會回報 API 無法連線。
+先用 `get_status` 確認 GUI 在線及目前的擷取來源，再用 `list_windows` 取得 `select_window` 需要的 `hwnd`。若要切回整個桌面，須明確送出 `{"hwnd": null}`。開始擷取前先確認來源與使用者授權，再呼叫 `take_screenshot` 或 `start_recording`。`start_recording` 的 `fps` 可省略，提供時須為 10–60 的整數。錄影完成後用 `stop_recording` 取得檔案路徑。
+
+stdio 子程序從使用者資料夾讀取 token，透過本機 API 呼叫 GUI。若無法連線，請先開啟 GUI，在 Agent API 頁確認監聽狀態。若 MCP client 採用 JSON 格式，請把同一個 `command` 和 `args` 放在 `mcpServers.recordscreen`，並依 JSON 規則跳脫路徑中的反斜線。
+
+MCP 2025-06-18 或 2025-11-25 的用戶端可讀取成功結果的 `structuredContent`。所有支援版本也可讀取 `content` 內的 JSON 文字。收到逾時時先查 `get_status`，確認錄影狀態後再決定是否重試。
 
 ## Codex Agent skill
 
 專案包含 `.agents/skills/recordscreen-control/SKILL.md`，說明如何透過 MCP 或本機 HTTP API 操作 RecordScreen，包含列舉／選擇視窗、截圖、錄影、MCP client 設定與 token 保護。Codex 在本專案工作時可使用 `$recordscreen-control` 呼叫此 skill。
-
-Release 使用 size optimization、LTO、單一 codegen unit、移除符號與 abort panic；這些設定會讓 release 編譯較久，但不影響 debug build。MCP JSON 範例中的 `YOUR_USER` 要換成目前 Windows 使用者資料夾名稱。
 
 ## 螢幕與隱私
 
