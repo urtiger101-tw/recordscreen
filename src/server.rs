@@ -7,7 +7,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, value::RawValue, Map, Value};
@@ -16,8 +16,14 @@ use std::{
     path::PathBuf,
     process::Child,
     sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tokio::{net::TcpListener, sync::watch};
+
+const LISTEN_ADDRESS: &str = "127.0.0.1:17321";
+const API_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const API_RUNTIME_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -100,10 +106,60 @@ struct WindowsResponse {
 }
 
 pub async fn serve(state: AppState) {
-    serve_at(state, "127.0.0.1:17321").await;
+    let (_shutdown, receiver) = watch::channel(false);
+    serve_at(state, LISTEN_ADDRESS, receiver).await;
 }
 
-async fn serve_at(state: AppState, address: &str) {
+pub struct ApiServer {
+    shutdown: watch::Sender<bool>,
+    thread: JoinHandle<()>,
+}
+
+impl ApiServer {
+    pub fn shutdown(self) -> thread::Result<()> {
+        self.shutdown.send_replace(true);
+        self.thread.join()
+    }
+}
+
+pub fn spawn_api(state: AppState) -> std::io::Result<ApiServer> {
+    let (shutdown, receiver) = watch::channel(false);
+    let thread = thread::Builder::new()
+        .name("agent-control-api".into())
+        .spawn(move || {
+            match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => {
+                    runtime.block_on(serve_at(state, LISTEN_ADDRESS, receiver));
+                    runtime.shutdown_timeout(API_RUNTIME_TIMEOUT);
+                }
+                Err(error) => state.set_api_status(ApiStatus::Failed(format!(
+                    "Cannot start Agent API runtime: {error}"
+                ))),
+            }
+        })?;
+    Ok(ApiServer { shutdown, thread })
+}
+
+async fn serve_at(state: AppState, address: &str, shutdown: watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    let listener = match TcpListener::bind(address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            state.set_api_status(ApiStatus::Failed(format!(
+                "Cannot listen on {address}: {error}"
+            )));
+            return;
+        }
+    };
+    serve_listener(state, listener, shutdown).await;
+}
+
+async fn serve_listener(state: AppState, listener: TcpListener, shutdown: watch::Receiver<bool>) {
     let protected = Router::new()
         .route("/api/v1/status", get(status))
         .route("/api/v1/windows", get(list_windows))
@@ -116,24 +172,33 @@ async fn serve_at(state: AppState, address: &str) {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .merge(protected)
-        .layer(middleware::from_fn(check_local_request));
+        .layer(middleware::from_fn(check_local_request))
+        .layer(Extension(shutdown.clone()));
 
-    let listener = match tokio::net::TcpListener::bind(address).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            state.set_api_status(ApiStatus::Failed(format!(
-                "Cannot listen on {address}: {error}"
-            )));
-            return;
-        }
-    };
     state.set_api_status(ApiStatus::Listening);
-    if let Err(error) = axum::serve(listener, app).await {
-        state.set_api_status(ApiStatus::Failed(format!("Agent API stopped: {error}")));
+    let mut graceful = shutdown.clone();
+    let mut deadline = shutdown;
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = graceful.wait_for(|requested| *requested).await;
+    });
+    tokio::select! {
+        result = server => {
+            if let Err(error) = result {
+                state.set_api_status(ApiStatus::Failed(format!("Agent API stopped: {error}")));
+            }
+        }
+        () = async move {
+            let _ = deadline.wait_for(|requested| *requested).await;
+            tokio::time::sleep(API_DRAIN_TIMEOUT).await;
+        } => {}
     }
 }
 
-async fn check_local_request(req: Request<Body>, next: Next) -> Response {
+async fn check_local_request(
+    Extension(shutdown): Extension<watch::Receiver<bool>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
     let host_ok = req
         .headers()
         .get(header::HOST)
@@ -148,6 +213,12 @@ async fn check_local_request(req: Request<Body>, next: Next) -> Response {
         .unwrap_or(true);
     if !host_ok || !origin_ok {
         return (StatusCode::FORBIDDEN, "loopback requests only").into_response();
+    }
+    if *shutdown.borrow() {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RecordScreen is shutting down",
+        );
     }
     next.run(req).await
 }
@@ -239,6 +310,7 @@ async fn screenshot(State(state): State<AppState>) -> Response {
 
 async fn start(
     State(state): State<AppState>,
+    Extension(shutdown): Extension<watch::Receiver<bool>>,
     Json(StartRequest::Object { fps }): Json<StartRequest>,
 ) -> Response {
     if !(10..=60).contains(&fps) {
@@ -260,6 +332,14 @@ async fn start(
             )
         }
     };
+    // Requests already parsing a body can outlast listener shutdown.
+    // Check under the same lock used to finish any recording on exit.
+    if *shutdown.borrow() {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RecordScreen is shutting down",
+        );
+    }
     if guard.is_some() {
         return api_error(StatusCode::CONFLICT, "recording is already active");
     }
@@ -314,30 +394,51 @@ async fn stop(State(state): State<AppState>) -> Response {
 }
 
 pub fn stop_capture(state: &AppState) -> Result<PathBuf, String> {
+    finish_recording(state)?.ok_or_else(|| "recording is not active".to_owned())
+}
+
+pub fn finish_recording(state: &AppState) -> Result<Option<PathBuf>, String> {
     let mut recording = state
         .recording
         .lock()
         .map_err(|_| "recording state unavailable".to_owned())?;
-    let mut active = recording
-        .take()
-        .ok_or_else(|| "recording is not active".to_owned())?;
+    let Some(active) = recording.as_mut() else {
+        return Ok(None);
+    };
     if let Some(mut stdin) = active.child.stdin.take() {
         use std::io::Write;
         let _ = stdin.write_all(b"q\n");
     }
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        match active.child.try_wait() {
-            Ok(Some(status)) if status.success() && active.path.exists() => return Ok(active.path),
-            Ok(Some(status)) => return Err(format!("FFmpeg ended with {status}")),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
-            Ok(None) => {
-                let _ = active.child.kill();
-                let _ = active.child.wait();
-                return Err("FFmpeg did not stop cleanly within 8 seconds".into());
+        let failure = match active.child.try_wait() {
+            Ok(Some(status)) => {
+                let path = active.path.clone();
+                *recording = None;
+                return if status.success() && path.exists() {
+                    Ok(Some(path))
+                } else {
+                    Err(format!("FFmpeg ended with {status}"))
+                };
             }
-            Err(error) => return Err(format!("could not stop FFmpeg: {error}")),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Ok(None) => "FFmpeg did not stop cleanly within 8 seconds".into(),
+            Err(error) => format!("could not check whether FFmpeg stopped: {error}"),
+        };
+        if let Err(error) = active.child.kill() {
+            if !matches!(active.child.try_wait(), Ok(Some(_))) {
+                return Err(format!("{failure}. Could not terminate FFmpeg: {error}"));
+            }
         }
+        active
+            .child
+            .wait()
+            .map_err(|error| format!("{failure}. Could not wait for FFmpeg: {error}"))?;
+        *recording = None;
+        return Err(failure);
     }
 }
 
@@ -625,6 +726,131 @@ fn mcp_error(error: &str) -> Value {
 mod tests {
     use super::*;
 
+    fn test_state(output_dir: PathBuf) -> AppState {
+        AppState {
+            ffmpeg: None,
+            output_dir: Arc::new(Mutex::new(output_dir)),
+            recording: Arc::new(Mutex::new(None)),
+            finished_recordings: Arc::new(Mutex::new(Vec::new())),
+            selected_target: Arc::new(Mutex::new(None)),
+            token: Arc::new("test-only-token".into()),
+            api_status: Arc::new(Mutex::new(ApiStatus::Starting)),
+        }
+    }
+
+    #[tokio::test]
+    async fn in_flight_start_is_rejected_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = test_state(dir.path().to_owned());
+        state.ffmpeg = Some(dir.path().join("unavailable-ffmpeg"));
+        let (shutdown, receiver) = watch::channel(false);
+        shutdown.send_replace(true);
+        let response = start(
+            State(state.clone()),
+            Extension(receiver),
+            Json(StartRequest::Object { fps: 30 }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(state.recording.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn listener_stops_with_a_slow_request_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let state = test_state(PathBuf::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, receiver) = watch::channel(false);
+        let server = tokio::spawn(serve_listener(state, listener, receiver));
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"POST /api/v1/recording/start HTTP/1.1\r\nHost: 127.0.0.1:17321\r\nAuthorization: Bearer test-only-token\r\nContent-Type: application/json\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = [0; 25];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+            .await
+            .expect("server must begin reading the request body")
+            .unwrap();
+        assert_eq!(&response, b"HTTP/1.1 100 Continue\r\n\r\n");
+        shutdown.send_replace(true);
+        tokio::time::timeout(API_DRAIN_TIMEOUT + Duration::from_secs(2), server)
+            .await
+            .expect("slow request must not indefinitely prolong shutdown")
+            .unwrap();
+        assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    }
+
+    #[test]
+    fn finish_recording_sends_q_and_reaps_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake-recording.mp4");
+        let state = test_state(dir.path().to_owned());
+        *state.recording.lock().unwrap() = Some(RecordingProcess {
+            child: spawn_recording_child(&path, "finalize"),
+            path: path.clone(),
+            started: Instant::now(),
+        });
+        assert_eq!(finish_recording(&state).unwrap(), Some(path.clone()));
+        assert_eq!(std::fs::read(path).unwrap(), b"finalized");
+        assert_eq!(finish_recording(&state).unwrap(), None);
+        assert_eq!(stop_capture(&state).unwrap_err(), "recording is not active");
+    }
+
+    #[test]
+    fn finish_recording_terminates_unresponsive_child_after_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake-recording.mp4");
+        let state = test_state(dir.path().to_owned());
+        *state.recording.lock().unwrap() = Some(RecordingProcess {
+            child: spawn_recording_child(&path, "hang"),
+            path,
+            started: Instant::now(),
+        });
+
+        assert_eq!(
+            finish_recording(&state).unwrap_err(),
+            "FFmpeg did not stop cleanly within 8 seconds"
+        );
+        assert_eq!(finish_recording(&state).unwrap(), None);
+    }
+
+    fn spawn_recording_child(path: &std::path::Path, behavior: &str) -> Child {
+        use std::process::{Command, Stdio};
+
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "server::tests::fake_recording_child",
+                "--nocapture",
+            ])
+            .env("RECORDSCREEN_TEST_CHILD_OUTPUT", path)
+            .env("RECORDSCREEN_TEST_CHILD_BEHAVIOR", behavior)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn fake_recording_child() {
+        let Some(path) = std::env::var_os("RECORDSCREEN_TEST_CHILD_OUTPUT") else {
+            return;
+        };
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        assert_eq!(line, "q\n");
+        if std::env::var("RECORDSCREEN_TEST_CHILD_BEHAVIOR").as_deref() == Ok("hang") {
+            loop {
+                thread::park();
+            }
+        }
+        std::fs::write(path, b"finalized").unwrap();
+    }
+
     #[test]
     fn http_capture_arguments_require_objects_with_unambiguous_fields() {
         for invalid in [
@@ -794,16 +1020,9 @@ mod tests {
     async fn occupied_port_is_reported_in_api_status() {
         let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = occupied.local_addr().unwrap().to_string();
-        let state = AppState {
-            ffmpeg: None,
-            output_dir: Arc::new(Mutex::new(PathBuf::new())),
-            recording: Arc::new(Mutex::new(None)),
-            finished_recordings: Arc::new(Mutex::new(Vec::new())),
-            selected_target: Arc::new(Mutex::new(None)),
-            token: Arc::new("test-only-token".into()),
-            api_status: Arc::new(Mutex::new(ApiStatus::Starting)),
-        };
-        serve_at(state.clone(), &address).await;
+        let state = test_state(PathBuf::new());
+        let (_shutdown, receiver) = watch::channel(false);
+        serve_at(state.clone(), &address, receiver).await;
         let result = state.api_status.lock().unwrap().clone();
         assert!(matches!(result, ApiStatus::Failed(message) if message.contains(&address)));
     }
