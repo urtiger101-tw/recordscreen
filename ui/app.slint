@@ -37,15 +37,48 @@ component Icon inherits Image {
     colorize: Theme.text;
 }
 
+component ActionSurface inherits Rectangle {
+    in property <bool> enabled: true;
+    out property <bool> pressed: pointer-area.pressed;
+    out property <bool> hovered: pointer-area.has-hover;
+    callback clicked;
+
+    border-width: keyboard.has-focus && enabled ? 2px : 0px;
+    border-color: Theme.text;
+    forward-focus: keyboard;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (enabled) { clicked(); } }
+
+    pointer-area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            keyboard.focus();
+            root.clicked();
+        }
+    }
+
+    keyboard := FocusScope {
+        x: 0;
+        width: 0px; // Route mouse input through the TouchArea.
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (root.enabled && (event.text == Key.Space || event.text == Key.Return)) {
+                if (!event.repeat) { root.clicked(); }
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
 // kind: 0 secondary, 1 primary, 2 danger, 3 ghost
-component Btn inherits Rectangle {
+component Btn inherits ActionSurface {
     in property <image> icon;
     in property <bool> has-icon: true;
     in property <string> text;
     in property <string> tip: text;
-    in property <bool> enabled: true;
     in property <int> kind: 0;
-    callback clicked;
     property <bool> icon-only: text == "";
     property <color> fill: kind == 1 ? Theme.accent : kind == 2 ? Theme.record : kind == 3 ? transparent : Theme.surface-3;
     property <color> fg: kind == 1 || kind == 2 ? #ffffff : Theme.text;
@@ -53,19 +86,11 @@ component Btn inherits Rectangle {
     height: 34px;
     min-width: icon-only ? 34px : 0px;
     border-radius: 9px;
-    background: !enabled ? Theme.surface-2 : ta.pressed ? fill.darker(25%) : ta.has-hover ? (kind == 3 ? Theme.surface-3 : fill.brighter(12%)) : fill;
-    opacity: enabled ? 1.0 : 0.55;
+    background: !root.enabled ? Theme.surface-2 : root.pressed ? fill.darker(25%) : root.hovered ? (kind == 3 ? Theme.surface-3 : fill.brighter(12%)) : fill;
+    opacity: root.enabled ? 1.0 : 0.55;
     accessible-role: button;
     accessible-label: tip;
-    accessible-enabled: enabled;
-    accessible-action-default => { if (enabled) { clicked(); } }
     animate background { duration: 110ms; }
-
-    ta := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
-    }
 
     HorizontalLayout {
         padding-left: icon-only ? 0px : 12px;
@@ -87,30 +112,21 @@ component Btn inherits Rectangle {
 }
 
 // Large round transport button.
-component RoundBtn inherits Rectangle {
+component RoundBtn inherits ActionSurface {
     in property <image> icon;
     in property <string> tip;
-    in property <bool> enabled: true;
     in property <length> size: 44px;
     in property <color> fill: Theme.surface-3;
     in property <color> fg: Theme.text;
     in property <length> icon-size: 20px;
-    callback clicked;
     width: size;
     height: size;
     border-radius: size / 2;
-    background: !enabled ? Theme.surface-2 : ta.pressed ? fill.darker(25%) : ta.has-hover ? fill.brighter(14%) : fill;
-    opacity: enabled ? 1.0 : 0.5;
+    background: !root.enabled ? Theme.surface-2 : root.pressed ? fill.darker(25%) : root.hovered ? fill.brighter(14%) : fill;
+    opacity: root.enabled ? 1.0 : 0.5;
     accessible-role: button;
     accessible-label: tip;
-    accessible-enabled: enabled;
-    accessible-action-default => { if (enabled) { clicked(); } }
     animate background { duration: 120ms; }
-    ta := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
-    }
     Icon {
         source: root.icon;
         width: root.icon-size;
@@ -145,16 +161,16 @@ component Muted inherits Text {
     wrap: word-wrap;
 }
 
-component TabItem inherits Rectangle {
+component TabItem inherits ActionSurface {
     in property <image> icon;
     in property <string> label;
     in property <bool> active;
-    callback clicked;
     height: 50px;
+    border-radius: 9px;
     accessible-role: tab;
     accessible-label: label;
-    accessible-action-default => { clicked(); }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    accessible-item-selectable: true;
+    accessible-item-selected: active;
     VerticalLayout {
         alignment: center;
         spacing: 3px;
@@ -164,7 +180,7 @@ component TabItem inherits Rectangle {
                 width: 42px;
                 height: 26px;
                 border-radius: 13px;
-                background: root.active ? Theme.accent-soft : ta.has-hover ? Theme.surface-2 : transparent;
+                background: root.active ? Theme.accent-soft : root.hovered ? Theme.surface-2 : transparent;
                 animate background { duration: 120ms; }
                 Icon {
                     source: root.icon;
@@ -259,11 +275,11 @@ export component AppWindow inherits Window {
     keys := FocusScope {
         key-pressed(event) => {
             if (event.modifiers.control && event.modifiers.shift && (event.text == "s" || event.text == "S")) {
-                root.screenshot();
+                if (!event.repeat) { root.screenshot(); }
                 return accept;
             }
             if (event.modifiers.control && !event.modifiers.shift && (event.text == "r" || event.text == "R")) {
-                root.toggle-record();
+                if (!event.repeat) { root.toggle-record(); }
                 return accept;
             }
             reject
@@ -384,7 +400,7 @@ export component AppWindow inherits Window {
                                         fill: Theme.record;
                                         fg: #ffffff;
                                         icon: root.recording || root.counting ? @image-url("icons/stop.svg") : @image-url("icons/record.svg");
-                                        tip: root.recording ? I18n.t("Stop recording (Ctrl+R)", "停止錄影（Ctrl+R）") : root.counting ? I18n.t("Cancel countdown", "取消倒數") : I18n.t("Start recording (Ctrl+R)", "開始錄影（Ctrl+R）");
+                                        tip: root.recording ? I18n.t("Stop recording (Ctrl+R)", "停止錄影（Ctrl+R）") : root.counting ? I18n.t("Cancel countdown (Ctrl+R)", "取消倒數（Ctrl+R）") : I18n.t("Start recording (Ctrl+R)", "開始錄影（Ctrl+R）");
                                         enabled: root.busy || root.can-capture;
                                         clicked => {
                                             if (root.counting) { root.cancel-countdown(); } else { root.toggle-record(); }
@@ -430,7 +446,7 @@ export component AppWindow inherits Window {
                                 selected => { root.source-selected(self.current-index); }
                             }
                             Muted {
-                                text: root.busy ? I18n.t("Source is locked while recording.", "錄影期間來源會鎖定。") : I18n.t("Keep the target window open and not minimized.", "目標視窗須保持開啟且勿最小化。");
+                                text: root.busy ? I18n.t("The source is locked during countdown and recording.", "倒數與錄影期間會鎖定擷取來源。") : root.source-index > 0 ? I18n.t("Keep the target window open and not minimized.", "目標視窗須保持開啟且勿最小化。") : I18n.t("Captures the entire desktop.", "擷取整個桌面。");
                             }
                         }
 
@@ -780,6 +796,7 @@ export component AppWindow inherits Window {
                     }
                     Text {
                         text: root.status;
+                        accessible-live-region: polite;
                         color: root.status-kind == 2 ? Theme.record : Theme.muted;
                         font-size: 11px;
                         overflow: elide;
@@ -792,6 +809,7 @@ export component AppWindow inherits Window {
             // ── Tab bar ─────────────────────────────────────────────
             Rectangle {
                 background: Theme.surface;
+                accessible-role: tab-list;
                 Rectangle { y: 0px; height: 1px; background: Theme.border; }
                 HorizontalLayout {
                     padding-left: 6px;
@@ -801,7 +819,7 @@ export component AppWindow inherits Window {
                     TabItem { icon: @image-url("icons/capture.svg"); label: I18n.t("Capture", "擷取"); active: root.page == 0; clicked => { root.page = 0; root.page-changed(0); } }
                     TabItem { icon: @image-url("icons/library.svg"); label: I18n.t("Library", "檔案庫"); active: root.page == 1; clicked => { root.page = 1; root.page-changed(1); } }
                     TabItem { icon: @image-url("icons/settings.svg"); label: I18n.t("Settings", "設定"); active: root.page == 2; clicked => { root.page = 2; root.page-changed(2); } }
-                    TabItem { icon: @image-url("icons/agent.svg"); label: "Agent"; active: root.page == 3; clicked => { root.page = 3; root.page-changed(3); } }
+                    TabItem { icon: @image-url("icons/agent.svg"); label: I18n.t("Agent", "代理程式"); active: root.page == 3; clicked => { root.page = 3; root.page-changed(3); } }
                 }
             }
         }
