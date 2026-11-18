@@ -52,10 +52,17 @@ pub struct RecordingProcess {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StartRequest {
-    #[serde(default = "default_fps")]
-    fps: u32,
+// An untagged struct variant accepts JSON objects and preserves field validation.
+#[serde(
+    untagged,
+    deny_unknown_fields,
+    expecting = "a JSON object with an optional integer fps"
+)]
+enum StartRequest {
+    Object {
+        #[serde(default = "default_fps")]
+        fps: u32,
+    },
 }
 
 fn default_fps() -> u32 {
@@ -75,25 +82,15 @@ struct ErrorResponse {
 }
 
 #[derive(Deserialize)]
-#[serde(try_from = "Map<String, Value>")]
-struct SelectTargetRequest {
-    hwnd: Option<usize>,
-}
-
-impl TryFrom<Map<String, Value>> for SelectTargetRequest {
-    type Error = &'static str;
-
-    fn try_from(mut arguments: Map<String, Value>) -> Result<Self, Self::Error> {
-        match arguments.remove("hwnd") {
-            Some(Value::Null) => Ok(Self { hwnd: None }),
-            Some(hwnd) => serde_json::from_value(hwnd)
-                .map(|hwnd| Self { hwnd: Some(hwnd) })
-                .map_err(|_| {
-                    "hwnd must be a nonnegative integer returned by list_windows, or null"
-                }),
-            None => Err("hwnd is required; pass null explicitly to select the entire desktop"),
-        }
-    }
+#[serde(
+    untagged,
+    expecting = "a JSON object with one hwnd field containing a nonnegative integer or null"
+)]
+enum SelectTargetRequest {
+    Object {
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        hwnd: Option<usize>,
+    },
 }
 
 #[derive(serde::Serialize)]
@@ -179,7 +176,7 @@ async fn list_windows() -> Json<WindowsResponse> {
 
 async fn select_target(
     State(state): State<AppState>,
-    Json(request): Json<SelectTargetRequest>,
+    Json(SelectTargetRequest::Object { hwnd }): Json<SelectTargetRequest>,
 ) -> Response {
     let recording = match state.recording.lock() {
         Ok(recording) => recording,
@@ -196,7 +193,7 @@ async fn select_target(
             "stop recording before changing the capture target",
         );
     }
-    let target = match request.hwnd {
+    let target = match hwnd {
         Some(hwnd) => match windows_capture::find_window(hwnd) {
             Some(target) => Some(target),
             None => return api_error(StatusCode::NOT_FOUND, "window handle is not available"),
@@ -241,13 +238,9 @@ async fn screenshot(State(state): State<AppState>) -> Response {
 
 async fn start(
     State(state): State<AppState>,
-    Json(arguments): Json<Map<String, Value>>,
+    Json(StartRequest::Object { fps }): Json<StartRequest>,
 ) -> Response {
-    let request: StartRequest = match serde_json::from_value(Value::Object(arguments)) {
-        Ok(request) => request,
-        Err(error) => return api_error(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
-    };
-    if !(10..=60).contains(&request.fps) {
+    if !(10..=60).contains(&fps) {
         return api_error(StatusCode::BAD_REQUEST, "fps must be between 10 and 60");
     }
     let Some(ffmpeg) = state.ffmpeg.clone() else {
@@ -274,7 +267,7 @@ async fn start(
         Err(error) => return api_error(StatusCode::CONFLICT, &error),
     };
     let path = dir.join(format!("recording-{}.mp4", timestamp()));
-    match start_recording(&ffmpeg, &path, request.fps, target) {
+    match start_recording(&ffmpeg, &path, fps, target) {
         Ok(child) => {
             *guard = Some(RecordingProcess {
                 child,
@@ -521,20 +514,22 @@ fn mcp_tool_request(
         "get_status" => ("GET", "/api/v1/status", None, None),
         "list_windows" => ("GET", "/api/v1/windows", None, None),
         "select_window" => {
-            let request = SelectTargetRequest::try_from(arguments.clone())
-                .map_err(|error| InvalidArguments(error.into()))?;
+            let SelectTargetRequest::Object { hwnd } =
+                serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
+                    InvalidArguments("hwnd is required and must be a nonnegative integer returned by list_windows, or explicit null for the entire desktop".into())
+                })?;
             (
                 "POST",
                 "/api/v1/target",
-                Some(json!({ "hwnd": request.hwnd })),
+                Some(json!({ "hwnd": hwnd })),
                 Some("hwnd"),
             )
         }
         "take_screenshot" => ("POST", "/api/v1/screenshot", None, None),
         "start_recording" => {
-            let request: StartRequest = serde_json::from_value(Value::Object(arguments.clone()))
+            let StartRequest::Object { fps } = serde_json::from_value(Value::Object(arguments.clone()))
                 .map_err(|error| InvalidArguments(format!("Invalid start_recording arguments. fps must be an integer between 10 and 60: {error}")))?;
-            if !(10..=60).contains(&request.fps) {
+            if !(10..=60).contains(&fps) {
                 return Err(InvalidArguments(
                     "fps must be an integer between 10 and 60".into(),
                 ));
@@ -542,7 +537,7 @@ fn mcp_tool_request(
             (
                 "POST",
                 "/api/v1/recording/start",
-                Some(json!({ "fps": request.fps })),
+                Some(json!({ "fps": fps })),
                 Some("fps"),
             )
         }
@@ -614,14 +609,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn http_target_requires_an_object_with_explicit_hwnd() {
-        for invalid in ["{}", "[null]", r#"{"hwnd":-1}"#, r#"{"hwnd":"42"}"#] {
+    fn http_capture_arguments_require_objects_with_unambiguous_fields() {
+        for invalid in [
+            "{}",
+            "[null]",
+            r#"{"hwnd":-1}"#,
+            r#"{"hwnd":"42"}"#,
+            r#"{"hwnd":42,"hwnd":null}"#,
+        ] {
             assert!(serde_json::from_str::<SelectTargetRequest>(invalid).is_err());
         }
-        let desktop: SelectTargetRequest = serde_json::from_str(r#"{"hwnd":null}"#).unwrap();
-        let window: SelectTargetRequest = serde_json::from_str(r#"{"hwnd":42}"#).unwrap();
-        assert_eq!(desktop.hwnd, None);
-        assert_eq!(window.hwnd, Some(42));
+        for (valid, expected) in [(r#"{"hwnd":null}"#, None), (r#"{"hwnd":42}"#, Some(42))] {
+            let SelectTargetRequest::Object { hwnd } = serde_json::from_str(valid).unwrap();
+            assert_eq!(hwnd, expected);
+        }
+
+        for invalid in [
+            "[]",
+            "[30]",
+            r#"{"fps":null}"#,
+            r#"{"fps":30,"fps":60}"#,
+            r#"{"fpx":30}"#,
+        ] {
+            assert!(serde_json::from_str::<StartRequest>(invalid).is_err());
+        }
+        for (valid, expected) in [("{}", 30), (r#"{"fps":60}"#, 60)] {
+            let StartRequest::Object { fps } = serde_json::from_str(valid).unwrap();
+            assert_eq!(fps, expected);
+        }
     }
 
     #[test]
