@@ -105,11 +105,6 @@ struct WindowsResponse {
     windows: Vec<WindowTarget>,
 }
 
-pub async fn serve(state: AppState) {
-    let (_shutdown, receiver) = watch::channel(false);
-    serve_at(state, LISTEN_ADDRESS, receiver).await;
-}
-
 pub struct ApiServer {
     shutdown: watch::Sender<bool>,
     thread: JoinHandle<()>,

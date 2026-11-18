@@ -90,6 +90,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ),
     };
     let output_dir = settings.output_dir.clone();
+    let language = Language::from_code(&settings.language);
     let (token, token_error) = match load_or_create_token() {
         Ok(token) => (token, None),
         Err(error) => (
@@ -107,38 +108,53 @@ fn main() -> Result<(), slint::PlatformError> {
         api_status: Arc::new(Mutex::new(server::ApiStatus::Starting)),
     };
 
-    if let Some(error) = token_error {
+    let api = if let Some(error) = token_error {
         shared.set_api_status(server::ApiStatus::Failed(error));
+        None
     } else {
-        let server_state = shared.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("agent-control-api".into())
-            .spawn(move || {
-                match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime.block_on(server::serve(server_state)),
-                    Err(error) => server_state.set_api_status(server::ApiStatus::Failed(format!(
-                        "Cannot start Agent API runtime: {error}"
-                    ))),
-                }
-            })
-        {
-            shared.set_api_status(server::ApiStatus::Failed(format!(
-                "Cannot start Agent API thread: {error}"
-            )));
+        match server::spawn_api(shared.clone()) {
+            Ok(api) => Some(api),
+            Err(error) => {
+                shared.set_api_status(server::ApiStatus::Failed(format!(
+                    "Cannot start Agent API thread: {error}"
+                )));
+                None
+            }
         }
-    }
+    };
 
-    ui::run(
-        shared,
+    let ui_result = ui::run(
+        shared.clone(),
         token,
         settings,
         settings_error,
         #[cfg(windows)]
         instance.clone(),
-    )
+    );
+
+    // Stop accepting new recordings before finalizing one that is still active.
+    let api_failed = api.is_some_and(|api| api.shutdown().is_err());
+    let shutdown_error = match server::finish_recording(&shared) {
+        Err(error) => Some(format!(
+            "{}\n\n{error}",
+            language.text("Could not finish recording.", "無法完成錄影。")
+        )),
+        Ok(_) if api_failed => Some(
+            language
+                .text(
+                    "The Agent API stopped unexpectedly.",
+                    "代理程式 API 非預期中斷。",
+                )
+                .to_owned(),
+        ),
+        Ok(_) => None,
+    };
+    if let Some(message) = shutdown_error {
+        #[cfg(windows)]
+        singleton::show_error(&message);
+        return Err(slint::PlatformError::Other(message));
+    }
+    ui_result
 }
 
 struct RecorderApp {

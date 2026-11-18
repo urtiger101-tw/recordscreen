@@ -107,14 +107,7 @@ pub(super) fn run(
     ui.show()?;
     #[cfg(debug_assertions)]
     let _snapshot = debug_snapshot(&ui);
-    slint::run_event_loop_until_quit()?;
-    drop(timer);
-
-    let app = app.borrow();
-    if app.recording() {
-        let _ = server::stop_capture(&app.shared);
-    }
-    Ok(())
+    slint::run_event_loop_until_quit()
 }
 
 fn connect_callbacks(
