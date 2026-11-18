@@ -22,6 +22,7 @@ pub(super) fn run(
     token: String,
     settings: Settings,
     settings_error: Option<String>,
+    #[cfg(windows)] instance: Rc<singleton::Instance>,
 ) -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
     let app = Rc::new(RefCell::new(RecorderApp::new(
@@ -91,6 +92,10 @@ pub(super) fn run(
                 }
                 was_minimized = minimized;
             }
+            #[cfg(windows)]
+            if instance.take_restore_request() {
+                tray::show_window(&ui);
+            }
         });
     }
 
@@ -102,14 +107,7 @@ pub(super) fn run(
     ui.show()?;
     #[cfg(debug_assertions)]
     let _snapshot = debug_snapshot(&ui);
-    slint::run_event_loop_until_quit()?;
-    drop(timer);
-
-    let app = app.borrow();
-    if app.recording() {
-        let _ = server::stop_capture(&app.shared);
-    }
-    Ok(())
+    slint::run_event_loop_until_quit()
 }
 
 fn connect_callbacks(
@@ -621,7 +619,7 @@ mod tray {
         }
     }
 
-    fn show_window(ui: &AppWindow) {
+    pub(super) fn show_window(ui: &AppWindow) {
         let _ = ui.show();
         ui.window().set_minimized(false);
     }

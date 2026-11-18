@@ -2,6 +2,8 @@
 
 mod server;
 mod settings;
+#[cfg(windows)]
+mod singleton;
 mod ui;
 mod windows_capture;
 
@@ -62,6 +64,17 @@ fn main() -> Result<(), slint::PlatformError> {
         server::run_mcp_stdio();
         return Ok(());
     }
+    #[cfg(windows)]
+    let instance = match singleton::Instance::launch() {
+        Ok(Some(instance)) => std::rc::Rc::new(instance),
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            singleton::show_error(&format!(
+                "RecordScreen could not check for or show an existing window.\n\n無法確認或顯示已開啟的 RecordScreen 視窗。\n\n{error}"
+            ));
+            return Err(slint::PlatformError::Other(error.to_string()));
+        }
+    };
     let ffmpeg = find_ffmpeg();
     let (settings, settings_error) = match Settings::load_or_create(default_output_dir()) {
         Ok(settings) => (settings, None),
@@ -77,6 +90,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ),
     };
     let output_dir = settings.output_dir.clone();
+    let language = Language::from_code(&settings.language);
     let (token, token_error) = match load_or_create_token() {
         Ok(token) => (token, None),
         Err(error) => (
@@ -94,31 +108,53 @@ fn main() -> Result<(), slint::PlatformError> {
         api_status: Arc::new(Mutex::new(server::ApiStatus::Starting)),
     };
 
-    if let Some(error) = token_error {
+    let api = if let Some(error) = token_error {
         shared.set_api_status(server::ApiStatus::Failed(error));
+        None
     } else {
-        let server_state = shared.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("agent-control-api".into())
-            .spawn(move || {
-                match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime.block_on(server::serve(server_state)),
-                    Err(error) => server_state.set_api_status(server::ApiStatus::Failed(format!(
-                        "Cannot start Agent API runtime: {error}"
-                    ))),
-                }
-            })
-        {
-            shared.set_api_status(server::ApiStatus::Failed(format!(
-                "Cannot start Agent API thread: {error}"
-            )));
+        match server::spawn_api(shared.clone()) {
+            Ok(api) => Some(api),
+            Err(error) => {
+                shared.set_api_status(server::ApiStatus::Failed(format!(
+                    "Cannot start Agent API thread: {error}"
+                )));
+                None
+            }
         }
-    }
+    };
 
-    ui::run(shared, token, settings, settings_error)
+    let ui_result = ui::run(
+        shared.clone(),
+        token,
+        settings,
+        settings_error,
+        #[cfg(windows)]
+        instance.clone(),
+    );
+
+    // Stop accepting new recordings before finalizing one that is still active.
+    let api_failed = api.is_some_and(|api| api.shutdown().is_err());
+    let shutdown_error = match server::finish_recording(&shared) {
+        Err(error) => Some(format!(
+            "{}\n\n{error}",
+            language.text("Could not finish recording.", "無法完成錄影。")
+        )),
+        Ok(_) if api_failed => Some(
+            language
+                .text(
+                    "The Agent API stopped unexpectedly.",
+                    "代理程式 API 非預期中斷。",
+                )
+                .to_owned(),
+        ),
+        Ok(_) => None,
+    };
+    if let Some(message) = shutdown_error {
+        #[cfg(windows)]
+        singleton::show_error(&message);
+        return Err(slint::PlatformError::Other(message));
+    }
+    ui_result
 }
 
 struct RecorderApp {
@@ -509,6 +545,13 @@ fn capture_screenshot(
     output: &Path,
     target: Option<WindowTarget>,
 ) -> Result<(), String> {
+    let result = screenshot_command(ffmpeg, output, target)
+        .output()
+        .map_err(|e| format!("啟動 FFmpeg 失敗：{e}"))?;
+    screenshot_result(output, result.status, &result.stderr)
+}
+
+fn screenshot_command(ffmpeg: &Path, output: &Path, target: Option<WindowTarget>) -> Command {
     let mut cmd = hidden_command(ffmpeg);
     cmd.args([
         "-hide_banner",
@@ -529,11 +572,18 @@ fn capture_screenshot(
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
-    let result = cmd.output().map_err(|e| format!("啟動 FFmpeg 失敗：{e}"))?;
-    if result.status.success() && output.exists() {
+    cmd
+}
+
+fn screenshot_result(
+    output: &Path,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> Result<(), String> {
+    if status.success() && output.exists() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&result.stderr).trim().to_string())
+        Err(String::from_utf8_lossy(stderr).trim().to_string())
     }
 }
 

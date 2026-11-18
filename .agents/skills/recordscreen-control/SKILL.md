@@ -38,7 +38,7 @@ Typical requested app-window capture:
 3. Call `take_screenshot`, or call `start_recording` with the requested FPS.
 4. For a recording, call `stop_recording` at the user-requested end time and report the returned file path.
 
-The desktop app's own selector can also switch between **Entire desktop** and a listed app window. The same source is used for screenshots and recordings. The selected source is locked while recording.
+The desktop app's own selector can also switch between **Entire desktop** and a listed app window. The same source is used for screenshots and recordings. The selected source is locked while recording. Closing the desktop app stops new API requests, cancels an API screenshot in progress, and attempts to finalize any active recording. To get the finalized file path and confirm success, call `stop_recording` before closing the app.
 
 The GUI stores language, output folder, frame rate, countdown, and tray behavior (`minimize_to_tray`) in `%LOCALAPPDATA%\RecordScreen\setting.json`. It creates the file on first launch. After editing these values in the GUI, click **Apply** (Settings page: **Apply settings**) before capture; pending changes are not used for capture. Minimizing the window hides it to the system tray when `minimize_to_tray` is enabled; closing the window quits the app. Window HWNDs are session-specific and are not saved to the file.
 

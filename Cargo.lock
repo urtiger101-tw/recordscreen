@@ -4288,7 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "recordscreen"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arboard",
  "axum",
@@ -5418,6 +5418,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

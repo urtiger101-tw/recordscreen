@@ -1,6 +1,6 @@
 [package]
 name = "recordscreen"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Windows desktop screen recorder with a local agent control API"
 
@@ -12,10 +12,10 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "process", "io-util"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 rfd = { version = "0.17.2", default-features = false }
 tray-icon = "0.24.2"
 arboard = { version = "3.6", default-features = false }
