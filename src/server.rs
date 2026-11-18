@@ -1,5 +1,7 @@
 use crate::windows_capture::WindowTarget;
-use crate::{capture_screenshot, current_status, start_recording, windows_capture, Status};
+use crate::{
+    current_status, screenshot_command, screenshot_result, start_recording, windows_capture, Status,
+};
 use axum::{
     body::Body,
     extract::State,
@@ -19,7 +21,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{io::AsyncReadExt, net::TcpListener, sync::watch};
 
 const LISTEN_ADDRESS: &str = "127.0.0.1:17321";
 const API_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -280,7 +282,10 @@ async fn select_target(
     Json(serde_json::json!({ "ok": true, "capture_target": target })).into_response()
 }
 
-async fn screenshot(State(state): State<AppState>) -> Response {
+async fn screenshot(
+    State(state): State<AppState>,
+    Extension(shutdown): Extension<watch::Receiver<bool>>,
+) -> Response {
     let Some(ffmpeg) = state.ffmpeg.clone() else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "FFmpeg not found");
     };
@@ -293,13 +298,76 @@ async fn screenshot(State(state): State<AppState>) -> Response {
         Err(error) => return api_error(StatusCode::CONFLICT, &error),
     };
     let path = dir.join(format!("screenshot-{}.png", timestamp()));
-    match capture_screenshot(&ffmpeg, &path, target) {
+    if *shutdown.borrow() {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RecordScreen is shutting down",
+        );
+    }
+    let mut child = match tokio::process::Command::from(screenshot_command(&ffmpeg, &path, target))
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("啟動 FFmpeg 失敗：{error}"),
+            )
+        }
+    };
+    let result = match finish_screenshot(&mut child, shutdown).await {
+        Ok(Some((status, stderr))) => screenshot_result(&path, status, &stderr),
+        Ok(None) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "RecordScreen is shutting down",
+            )
+        }
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(()) => Json(FileResponse {
             ok: true,
             file: path.display().to_string(),
         })
         .into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+async fn finish_screenshot(
+    child: &mut tokio::process::Child,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<Option<(std::process::ExitStatus, Vec<u8>)>, String> {
+    let mut stderr = child.stderr.take();
+    let mut diagnostic = Vec::new();
+    let result = tokio::select! {
+        biased;
+        _ = shutdown.wait_for(|requested| *requested) => None,
+        result = async {
+            let collect_stderr = async {
+                if let Some(stderr) = stderr.as_mut() {
+                    stderr.read_to_end(&mut diagnostic).await?;
+                }
+                Ok(())
+            };
+            tokio::try_join!(child.wait(), collect_stderr)
+        } => Some(result),
+    };
+    match result {
+        Some(Ok((status, ()))) => Ok(Some((status, diagnostic))),
+        Some(Err(error)) => {
+            child.kill().await.map_err(|kill_error| format!("Could not read FFmpeg result: {error}. Could not terminate FFmpeg: {kill_error}"))?;
+            Err(format!("Could not read FFmpeg result: {error}"))
+        }
+        None => {
+            child
+                .kill()
+                .await
+                .map_err(|error| format!("Could not terminate screenshot FFmpeg: {error}"))?;
+            Ok(None)
+        }
     }
 }
 
@@ -835,6 +903,20 @@ mod tests {
         let Some(path) = std::env::var_os("RECORDSCREEN_TEST_CHILD_OUTPUT") else {
             return;
         };
+        match std::env::var("RECORDSCREEN_TEST_CHILD_BEHAVIOR").as_deref() {
+            Ok("screenshot-complete") => {
+                std::fs::write(path, b"fake screenshot").unwrap();
+                eprintln!("fake screenshot diagnostic");
+                return;
+            }
+            Ok("screenshot-wait") => {
+                std::fs::write(path, b"fake screenshot started").unwrap();
+                loop {
+                    thread::park();
+                }
+            }
+            _ => {}
+        }
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
         assert_eq!(line, "q\n");
@@ -844,6 +926,61 @@ mod tests {
             }
         }
         std::fs::write(path, b"finalized").unwrap();
+    }
+
+    #[tokio::test]
+    async fn screenshot_child_is_reaped_after_completion_or_api_shutdown() {
+        use std::process::Stdio;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake-screenshot.png");
+        let spawn = |behavior| {
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "server::tests::fake_recording_child",
+                    "--nocapture",
+                ])
+                .env("RECORDSCREEN_TEST_CHILD_OUTPUT", &path)
+                .env("RECORDSCREEN_TEST_CHILD_BEHAVIOR", behavior)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap()
+        };
+        let (shutdown, receiver) = watch::channel(false);
+        let mut child = spawn("screenshot-complete");
+        let (status, diagnostic) = tokio::time::timeout(
+            Duration::from_secs(10),
+            finish_screenshot(&mut child, receiver.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(child.try_wait().unwrap(), Some(status));
+        assert!(String::from_utf8_lossy(&diagnostic).contains("fake screenshot diagnostic"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"fake screenshot");
+        std::fs::remove_file(&path).unwrap();
+
+        let mut child = spawn("screenshot-wait");
+        let completed = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(finish_screenshot(&mut child, receiver), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                shutdown.send_replace(true);
+            })
+            .0
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(completed.is_none());
+        assert!(!child.try_wait().unwrap().unwrap().success());
     }
 
     #[test]

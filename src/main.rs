@@ -545,6 +545,13 @@ fn capture_screenshot(
     output: &Path,
     target: Option<WindowTarget>,
 ) -> Result<(), String> {
+    let result = screenshot_command(ffmpeg, output, target)
+        .output()
+        .map_err(|e| format!("啟動 FFmpeg 失敗：{e}"))?;
+    screenshot_result(output, result.status, &result.stderr)
+}
+
+fn screenshot_command(ffmpeg: &Path, output: &Path, target: Option<WindowTarget>) -> Command {
     let mut cmd = hidden_command(ffmpeg);
     cmd.args([
         "-hide_banner",
@@ -565,11 +572,18 @@ fn capture_screenshot(
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
-    let result = cmd.output().map_err(|e| format!("啟動 FFmpeg 失敗：{e}"))?;
-    if result.status.success() && output.exists() {
+    cmd
+}
+
+fn screenshot_result(
+    output: &Path,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> Result<(), String> {
+    if status.success() && output.exists() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&result.stderr).trim().to_string())
+        Err(String::from_utf8_lossy(stderr).trim().to_string())
     }
 }
 
