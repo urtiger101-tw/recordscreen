@@ -17,6 +17,8 @@ Windows 10+ 桌面錄影與截圖程式，使用 Rust 建置，FFmpeg 負責擷�
 
 主介面標題會顯示目前 app 版本，方便確認安裝版本與回報問題。程式視窗、執行檔與安裝捷徑使用相同的 RecordScreen 圖示；圖示原始檔位於 `assets/recordscreen.ico`。
 
+可用 `Tab` 和 `Shift+Tab` 移動到具有焦點外框的控制項，再用 `Enter` 或 `Space` 操作按鈕或切換頁籤。
+
 系統匣：設定頁的「Minimize to tray／最小化至系統匣」預設開啟（儲存於 `setting.json` 的 `minimize_to_tray`）。開啟時，最小化視窗或按標題列的系統匣按鈕會將視窗隱藏至系統匣；左鍵點擊系統匣圖示即可還原視窗。系統匣選單提供「Show RecordScreen」、開始／停止錄影、截圖與結束。直接關閉視窗（X）會結束程式，若正在錄影會先停止錄影。
 
 v0.1.6 改善設定儲存與 Agent 連線診斷：設定會先寫入同目錄暫存檔並同步，再替換 `setting.json`；寫入或替換失敗時保留原設定。「Discard changes／捨棄變更」可恢復目前已套用的設定。Agent API 頁會顯示啟動、監聽或失敗狀態；連接埠占用或 Token 無法讀寫時會顯示原因。指定視窗以 HWND 與 PID 判斷，切換文件或瀏覽器分頁造成標題改變時仍可擷取；視窗關閉、最小化或已屬於其他程序時須重新選取。
@@ -100,6 +102,8 @@ args = ['--mcp']
 先用 `get_status` 確認 GUI 在線及目前的擷取來源，再用 `list_windows` 取得 `select_window` 需要的 `hwnd`。若要切回整個桌面，須明確送出 `{"hwnd": null}`。開始擷取前先確認來源與使用者授權，再呼叫 `take_screenshot` 或 `start_recording`。`start_recording` 的 `fps` 可省略，提供時須為 10–60 的整數。錄影完成後用 `stop_recording` 取得檔案路徑。
 
 stdio 子程序從使用者資料夾讀取 token，透過本機 API 呼叫 GUI。若無法連線，請先開啟 GUI，在 Agent API 頁確認監聽狀態。若 MCP client 採用 JSON 格式，請把同一個 `command` 和 `args` 放在 `mcpServers.recordscreen`，並依 JSON 規則跳脫路徑中的反斜線。
+
+MCP 2025-06-18 或 2025-11-25 的用戶端可讀取成功結果的 `structuredContent`。所有支援版本也可讀取 `content` 內的 JSON 文字。收到逾時時先查 `get_status`，確認錄影狀態後再決定是否重試。
 
 ## Codex Agent skill
 
