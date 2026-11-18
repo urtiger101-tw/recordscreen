@@ -24,10 +24,12 @@ Use these tools if the user's MCP client has connected to RecordScreen:
 | --- | --- |
 | `get_status` | Read recording state, output folder, FFmpeg availability, and selected source. |
 | `list_windows` | List visible, non-minimized app windows with title, PID, and HWND. |
-| `select_window` | Lock capture to a listed HWND, or pass `null` for the entire desktop. Cannot change while recording. |
+| `select_window` | Requires `hwnd`. Pass a listed integer HWND or explicit `null` for the entire desktop. Cannot change while recording. |
 | `take_screenshot` | Save a PNG of the selected source. |
-| `start_recording` | Start MP4 capture; optional `fps` must be 10–60 and defaults to 30. |
+| `start_recording` | Start MP4 capture. Pass an integer `fps` from 10 to 60 or omit it to use 30. |
 | `stop_recording` | Stop capture and finalize the MP4. |
+
+After a successful call, read the response object from `structuredContent` when the negotiated MCP version is 2025-06-18 or newer. For older clients, parse the JSON string in `content[0].text`. Both forms use the HTTP API's response fields. Inspect the JSON-RPC `error` for a malformed request or unknown tool, and check `isError` for rejected tool arguments or failed execution. If a capture request times out, check `get_status` before retrying it.
 
 Typical requested app-window capture:
 
@@ -54,8 +56,8 @@ $status = Invoke-RestMethod "$base/api/v1/status" -Headers $headers
 $windows = Invoke-RestMethod "$base/api/v1/windows" -Headers $headers
 $windows.windows | Select-Object title, process_id, hwnd
 
-# Select one listed window. Replace the title below with the user's chosen title.
-$window = $windows.windows | Where-Object title -eq 'Chosen app window' | Select-Object -First 1
+# Replace 123456 with the exact HWND of the user's chosen window from the current list.
+$window = $windows.windows | Where-Object hwnd -eq 123456
 if (-not $window) { throw 'The requested window is not in the current window list.' }
 $body = @{ hwnd = [long]$window.hwnd } | ConvertTo-Json -Compress
 Invoke-RestMethod "$base/api/v1/target" -Method Post -Headers $headers `
@@ -72,7 +74,7 @@ Invoke-RestMethod "$base/api/v1/recording/start" -Method Post -Headers $headers 
 Invoke-RestMethod "$base/api/v1/recording/stop" -Method Post -Headers $headers
 ```
 
-`GET /health` is unauthenticated and returns `ok`; all `/api/v1/*` endpoints require the bearer token. Only connect to `127.0.0.1`. Common responses include `401` for a missing/invalid token, `404` for a stale or unavailable HWND, and `409` when changing the source during an active recording.
+`GET /health` is unauthenticated and returns `ok`; all `/api/v1/*` endpoints require the bearer token. Only connect to `127.0.0.1`. The target endpoint requires a JSON object with an explicit `hwnd`. For recording, send a JSON object containing `fps` or an empty object to use the default. Common responses include `401` for a missing/invalid token, `404` for a stale or unavailable HWND, `409` when changing the source during an active recording, and `422` for a malformed target or FPS field.
 
 ## MCP client setup
 
