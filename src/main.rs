@@ -2,6 +2,8 @@
 
 mod server;
 mod settings;
+#[cfg(windows)]
+mod singleton;
 mod ui;
 mod windows_capture;
 
@@ -62,6 +64,17 @@ fn main() -> Result<(), slint::PlatformError> {
         server::run_mcp_stdio();
         return Ok(());
     }
+    #[cfg(windows)]
+    let instance = match singleton::Instance::launch() {
+        Ok(Some(instance)) => std::rc::Rc::new(instance),
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            singleton::show_error(&format!(
+                "RecordScreen could not check for or show an existing window.\n\n無法確認或顯示已開啟的 RecordScreen 視窗。\n\n{error}"
+            ));
+            return Err(slint::PlatformError::Other(error.to_string()));
+        }
+    };
     let ffmpeg = find_ffmpeg();
     let (settings, settings_error) = match Settings::load_or_create(default_output_dir()) {
         Ok(settings) => (settings, None),
@@ -118,7 +131,14 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
-    ui::run(shared, token, settings, settings_error)
+    ui::run(
+        shared,
+        token,
+        settings,
+        settings_error,
+        #[cfg(windows)]
+        instance.clone(),
+    )
 }
 
 struct RecorderApp {
