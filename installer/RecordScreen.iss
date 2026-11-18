@@ -1,7 +1,11 @@
 #define AppName "RecordScreen"
-#define AppVersion "0.2.0"
 #define AppPublisher "urtiger101-tw"
 #define AppExeName "recordscreen.exe"
+#define AppExePath "..\target\release\" + AppExeName
+#define AppVersion GetFileProductVersionString(AddBackslash(SourcePath) + AppExePath)
+#if TypeOf(AppVersion) == TYPE_NULL || AppVersion == ""
+  #error Build target\release\recordscreen.exe before compiling the installer.
+#endif
 #define FFmpegUrl "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z"
 #define FFmpegSha256 "4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077"
 
@@ -9,6 +13,7 @@
 AppId={{8D37C931-C5DD-4FD5-AC04-CE2CE83F699B}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#GetVersionNumbersString(AddBackslash(SourcePath) + AppExePath)}
 AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\RecordScreen
 DefaultGroupName={#AppName}
@@ -32,7 +37,7 @@ ArchiveExtraction=basic
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\target\release\recordscreen.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppExePath}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [UninstallDelete]
