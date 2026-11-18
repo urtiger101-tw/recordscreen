@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{
     io::{BufRead, Write},
     path::PathBuf,
@@ -52,6 +52,7 @@ pub struct RecordingProcess {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartRequest {
     #[serde(default = "default_fps")]
     fps: u32,
@@ -74,8 +75,25 @@ struct ErrorResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(try_from = "Map<String, Value>")]
 struct SelectTargetRequest {
     hwnd: Option<usize>,
+}
+
+impl TryFrom<Map<String, Value>> for SelectTargetRequest {
+    type Error = &'static str;
+
+    fn try_from(mut arguments: Map<String, Value>) -> Result<Self, Self::Error> {
+        match arguments.remove("hwnd") {
+            Some(Value::Null) => Ok(Self { hwnd: None }),
+            Some(hwnd) => serde_json::from_value(hwnd)
+                .map(|hwnd| Self { hwnd: Some(hwnd) })
+                .map_err(|_| {
+                    "hwnd must be a nonnegative integer returned by list_windows, or null"
+                }),
+            None => Err("hwnd is required; pass null explicitly to select the entire desktop"),
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -221,7 +239,14 @@ async fn screenshot(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn start(State(state): State<AppState>, Json(request): Json<StartRequest>) -> Response {
+async fn start(
+    State(state): State<AppState>,
+    Json(arguments): Json<Map<String, Value>>,
+) -> Response {
+    let request: StartRequest = match serde_json::from_value(Value::Object(arguments)) {
+        Ok(request) => request,
+        Err(error) => return api_error(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
+    };
     if !(10..=60).contains(&request.fps) {
         return api_error(StatusCode::BAD_REQUEST, "fps must be between 10 and 60");
     }
@@ -387,8 +412,18 @@ pub fn run_mcp_stdio() {
         }
     };
     let stdin = std::io::stdin();
-    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
-    for line in stdin.lock().lines() {
+    let stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    serve_mcp_stdio(&client, &token, stdin.lock(), stdout);
+}
+
+fn serve_mcp_stdio(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    input: impl BufRead,
+    mut output: impl Write,
+) {
+    let mut structured_results = false;
+    for line in input.lines() {
         let Ok(line) = line else { break };
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -396,11 +431,16 @@ pub fn run_mcp_stdio() {
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             continue;
         };
-        let id = message.get("id").cloned();
-        if method.starts_with("notifications/") {
+        let Some(id) = message
+            .get("id")
+            .filter(|id| id.is_string() || id.is_number())
+        else {
+            continue;
+        };
+        if message["jsonrpc"] != "2.0" || method.starts_with("notifications/") {
             continue;
         }
-        let result = match method {
+        let mut response = match method {
             "initialize" => {
                 let requested_version = message
                     .pointer("/params/protocolVersion")
@@ -410,34 +450,37 @@ pub fn run_mcp_stdio() {
                     "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => requested_version,
                     _ => "2024-11-05",
                 };
-                Some(json!({
+                structured_results = matches!(version, "2025-06-18" | "2025-11-25");
+                json!({ "result": {
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "recordscreen", "version": env!("CARGO_PKG_VERSION") }
-                }))
+                } })
             }
-            "ping" => Some(json!({})),
-            "tools/list" => Some(json!({ "tools": mcp_tools() })),
-            "tools/call" => Some(call_mcp_tool(&client, &token, &message["params"])),
-            _ => {
-                if let Some(id) = id.clone() {
-                    let response = json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": -32601, "message": format!("Unknown method: {method}") }
-                    });
-                    let _ = serde_json::to_writer(&mut stdout, &response);
-                    let _ = stdout.write_all(b"\n");
-                    let _ = stdout.flush();
+            "ping" => json!({ "result": {} }),
+            "tools/list" => json!({ "result": { "tools": mcp_tools() } }),
+            "tools/call" => match mcp_tool_request(client, &message["params"]) {
+                Ok(request) => {
+                    json!({ "result": call_mcp_tool(request, token, structured_results) })
                 }
-                None
+                Err(McpCallError::InvalidRequest(error)) => {
+                    json!({ "error": { "code": -32602, "message": error } })
+                }
+                Err(McpCallError::InvalidArguments(error)) => {
+                    json!({ "result": mcp_error(&error) })
+                }
+            },
+            _ => {
+                json!({ "error": { "code": -32601, "message": format!("Unknown method: {method}") } })
             }
         };
-        if let (Some(id), Some(result)) = (id, result) {
-            let response = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-            if serde_json::to_writer(&mut stdout, &response).is_ok() {
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-            }
+        response["jsonrpc"] = json!("2.0");
+        response["id"] = id.clone();
+        if serde_json::to_writer(&mut output, &response).is_err()
+            || output.write_all(b"\n").is_err()
+            || output.flush().is_err()
+        {
+            break;
         }
     }
 }
@@ -446,72 +489,120 @@ fn mcp_tools() -> Value {
     json!([
         { "name": "get_status", "description": "Read the local screen recorder status and output directory.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
         { "name": "list_windows", "description": "List visible app windows that can be selected for capture.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
-        { "name": "select_window", "description": "Lock capture to a window handle returned by list_windows; pass null to capture the whole desktop.", "inputSchema": { "type": "object", "properties": { "hwnd": { "type": ["integer", "null"] } }, "required": ["hwnd"], "additionalProperties": false } },
+        { "name": "select_window", "description": "Lock capture to a window handle returned by list_windows; pass null to capture the whole desktop.", "inputSchema": { "type": "object", "properties": { "hwnd": { "type": ["integer", "null"], "minimum": 0 } }, "required": ["hwnd"], "additionalProperties": false } },
         { "name": "take_screenshot", "description": "Capture the selected app window, or the whole Windows desktop, to a PNG file.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } },
         { "name": "start_recording", "description": "Start recording the selected app window, or whole desktop, to an MP4 file.", "inputSchema": { "type": "object", "properties": { "fps": { "type": "integer", "minimum": 10, "maximum": 60, "default": 30 } }, "additionalProperties": false } },
         { "name": "stop_recording", "description": "Stop desktop recording and finalize the MP4 file.", "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false } }
     ])
 }
 
-fn call_mcp_tool(client: &reqwest::blocking::Client, token: &str, params: &Value) -> Value {
+#[derive(Debug)]
+enum McpCallError {
+    InvalidRequest(String),
+    InvalidArguments(String),
+}
+
+fn mcp_tool_request(
+    client: &reqwest::blocking::Client,
+    params: &Value,
+) -> Result<reqwest::blocking::RequestBuilder, McpCallError> {
+    use McpCallError::{InvalidArguments, InvalidRequest};
+
     let Some(name) = params.get("name").and_then(Value::as_str) else {
-        return mcp_error("tool name is required");
+        return Err(InvalidRequest("tool name is required".into()));
     };
-    let (method, path, body) = match name {
-        "get_status" => ("GET", "/api/v1/status", None),
-        "list_windows" => ("GET", "/api/v1/windows", None),
+    let empty = Map::new();
+    let arguments = match params.get("arguments") {
+        None => &empty,
+        Some(Value::Object(arguments)) => arguments,
+        Some(_) => return Err(InvalidRequest("arguments must be an object".into())),
+    };
+    let (method, path, body, allowed_argument) = match name {
+        "get_status" => ("GET", "/api/v1/status", None, None),
+        "list_windows" => ("GET", "/api/v1/windows", None, None),
         "select_window" => {
-            let hwnd = params
-                .pointer("/arguments/hwnd")
-                .cloned()
-                .unwrap_or(Value::Null);
-            if !hwnd.is_null() && !hwnd.is_u64() {
-                return mcp_error("hwnd must be an integer returned by list_windows, or null");
-            }
-            ("POST", "/api/v1/target", Some(json!({ "hwnd": hwnd })))
+            let request = SelectTargetRequest::try_from(arguments.clone())
+                .map_err(|error| InvalidArguments(error.into()))?;
+            (
+                "POST",
+                "/api/v1/target",
+                Some(json!({ "hwnd": request.hwnd })),
+                Some("hwnd"),
+            )
         }
-        "take_screenshot" => ("POST", "/api/v1/screenshot", None),
+        "take_screenshot" => ("POST", "/api/v1/screenshot", None, None),
         "start_recording" => {
-            let fps = params
-                .pointer("/arguments/fps")
-                .and_then(Value::as_u64)
-                .unwrap_or(30);
-            if !(10..=60).contains(&fps) {
-                return mcp_error("fps must be between 10 and 60");
+            let request: StartRequest = serde_json::from_value(Value::Object(arguments.clone()))
+                .map_err(|error| InvalidArguments(format!("Invalid start_recording arguments. fps must be an integer between 10 and 60: {error}")))?;
+            if !(10..=60).contains(&request.fps) {
+                return Err(InvalidArguments(
+                    "fps must be an integer between 10 and 60".into(),
+                ));
             }
             (
                 "POST",
                 "/api/v1/recording/start",
-                Some(json!({ "fps": fps })),
+                Some(json!({ "fps": request.fps })),
+                Some("fps"),
             )
         }
-        "stop_recording" => ("POST", "/api/v1/recording/stop", None),
-        _ => return mcp_error(&format!("unknown tool: {name}")),
+        "stop_recording" => ("POST", "/api/v1/recording/stop", None, None),
+        _ => return Err(InvalidRequest(format!("unknown tool: {name}"))),
     };
+    if let Some(key) = arguments
+        .keys()
+        .find(|key| Some(key.as_str()) != allowed_argument)
+    {
+        return Err(InvalidArguments(format!(
+            "unexpected argument for {name}: {key}"
+        )));
+    }
     let url = format!("http://127.0.0.1:17321{path}");
     let request = match method {
         "GET" => client.get(url),
         _ => client.post(url),
-    }
-    .bearer_auth(token);
-    let request = if let Some(body) = body {
+    };
+    Ok(if let Some(body) = body {
         request.json(&body)
     } else {
         request
-    };
-    match request.send() {
-        Ok(response) => {
-            let is_error = !response.status().is_success();
-            let body = response
-                .text()
-                .unwrap_or_else(|e| format!("HTTP read error: {e}"));
-            json!({ "content": [{ "type": "text", "text": body }], "isError": is_error })
+    })
+}
+
+fn call_mcp_tool(
+    request: reqwest::blocking::RequestBuilder,
+    token: &str,
+    structured_results: bool,
+) -> Value {
+    let response = match request.bearer_auth(token).send() {
+        Ok(response) => response,
+        Err(error) => {
+            return mcp_error(&format!(
+                "RecordScreen request failed. Verify the desktop app and check its status before retrying. ({error})"
+            ))
         }
-        Err(error) => json!({
-            "content": [{ "type": "text", "text": format!("RecordScreen is unavailable at 127.0.0.1:17321. Start the desktop app first. ({error})") }],
-            "isError": true
-        }),
+    };
+    let status = response.status();
+    match response.text() {
+        Ok(body) => mcp_http_result(status, &body, structured_results),
+        Err(error) => mcp_error(&format!(
+            "Could not read the RecordScreen HTTP response: {error}"
+        )),
     }
+}
+
+fn mcp_http_result(status: StatusCode, body: &str, structured_results: bool) -> Value {
+    if !status.is_success() {
+        return mcp_error(body);
+    }
+    let Ok(data @ Value::Object(_)) = serde_json::from_str::<Value>(body) else {
+        return mcp_error("RecordScreen returned a successful HTTP status without a JSON object.");
+    };
+    let mut result = json!({ "content": [{ "type": "text", "text": body }], "isError": false });
+    if structured_results {
+        result["structuredContent"] = data;
+    }
+    result
 }
 
 fn mcp_error(error: &str) -> Value {
@@ -521,6 +612,128 @@ fn mcp_error(error: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_target_requires_an_object_with_explicit_hwnd() {
+        for invalid in ["{}", "[null]", r#"{"hwnd":-1}"#, r#"{"hwnd":"42"}"#] {
+            assert!(serde_json::from_str::<SelectTargetRequest>(invalid).is_err());
+        }
+        let desktop: SelectTargetRequest = serde_json::from_str(r#"{"hwnd":null}"#).unwrap();
+        let window: SelectTargetRequest = serde_json::from_str(r#"{"hwnd":42}"#).unwrap();
+        assert_eq!(desktop.hwnd, None);
+        assert_eq!(window.hwnd, Some(42));
+    }
+
+    #[test]
+    fn mcp_only_builds_requests_for_schema_valid_arguments() {
+        let client = reqwest::blocking::Client::new();
+        for invalid in [
+            json!({ "name": "select_window" }),
+            json!({ "name": "select_window", "arguments": {} }),
+            json!({ "name": "select_window", "arguments": { "hwnd": -1 } }),
+            json!({ "name": "select_window", "arguments": { "hwnd": null, "hwd": 42 } }),
+            json!({ "name": "start_recording", "arguments": null }),
+            json!({ "name": "start_recording", "arguments": { "fps": null } }),
+            json!({ "name": "start_recording", "arguments": { "fps": "30" } }),
+            json!({ "name": "start_recording", "arguments": { "fps": -5 } }),
+            json!({ "name": "start_recording", "arguments": { "fps": 29.5 } }),
+            json!({ "name": "start_recording", "arguments": { "fps": 61 } }),
+            json!({ "name": "start_recording", "arguments": { "fpx": 30 } }),
+            json!({ "name": "take_screenshot", "arguments": { "hwnd": 42 } }),
+        ] {
+            assert!(mcp_tool_request(&client, &invalid).is_err(), "{invalid}");
+        }
+        for (valid, path, expected) in [
+            (
+                json!({ "name": "select_window", "arguments": { "hwnd": null } }),
+                "/api/v1/target",
+                json!({ "hwnd": null }),
+            ),
+            (
+                json!({ "name": "select_window", "arguments": { "hwnd": 42 } }),
+                "/api/v1/target",
+                json!({ "hwnd": 42 }),
+            ),
+            (
+                json!({ "name": "start_recording" }),
+                "/api/v1/recording/start",
+                json!({ "fps": 30 }),
+            ),
+            (
+                json!({ "name": "start_recording", "arguments": { "fps": 60 } }),
+                "/api/v1/recording/start",
+                json!({ "fps": 60 }),
+            ),
+        ] {
+            let request = mcp_tool_request(&client, &valid).unwrap().build().unwrap();
+            assert_eq!(request.url().path(), path);
+            assert_eq!(request.method(), "POST");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn mcp_stdio_lists_tools_and_reports_invalid_calls() {
+        let input = br#"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","method":"ping"}
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"select_window","arguments":{}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"invalid_tool"}}
+"#;
+        let mut output = Vec::new();
+        serve_mcp_stdio(
+            &reqwest::blocking::Client::new(),
+            "test-only-token",
+            &input[..],
+            &mut output,
+        );
+        let responses: Vec<Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(responses.len(), 4);
+        assert_eq!(responses[0]["id"], "init");
+        assert_eq!(responses[0]["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(responses[2]["id"], 2);
+        assert_eq!(responses[2]["result"]["isError"], true);
+        assert!(responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("hwnd is required"));
+        assert_eq!(responses[3]["error"]["code"], -32602);
+        assert!(responses[3]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool"));
+    }
+
+    #[test]
+    fn mcp_response_keeps_json_text_and_adds_structured_results_when_negotiated() {
+        let body = r#"{"recording":false,"capture_target":null}"#;
+        let structured = mcp_http_result(StatusCode::OK, body, true);
+        let legacy = mcp_http_result(StatusCode::OK, body, false);
+        for result in [&structured, &legacy] {
+            assert_eq!(result["content"][0]["text"], body);
+            assert_eq!(result["isError"], false);
+        }
+        assert_eq!(
+            structured["structuredContent"],
+            serde_json::from_str::<Value>(body).unwrap()
+        );
+        assert!(legacy.get("structuredContent").is_none());
+        for (status, body) in [
+            (StatusCode::OK, "not json"),
+            (StatusCode::UNAUTHORIZED, "missing or invalid bearer token"),
+        ] {
+            let result = mcp_http_result(status, body, true);
+            assert_eq!(result["isError"], true);
+            assert!(result.get("structuredContent").is_none());
+        }
+    }
 
     #[tokio::test]
     async fn occupied_port_is_reported_in_api_status() {
