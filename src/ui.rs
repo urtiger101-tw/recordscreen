@@ -22,6 +22,7 @@ pub(super) fn run(
     token: String,
     settings: Settings,
     settings_error: Option<String>,
+    #[cfg(windows)] instance: Rc<singleton::Instance>,
 ) -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
     let app = Rc::new(RefCell::new(RecorderApp::new(
@@ -90,6 +91,10 @@ pub(super) fn run(
                     let _ = ui.hide();
                 }
                 was_minimized = minimized;
+            }
+            #[cfg(windows)]
+            if instance.take_restore_request() {
+                tray::show_window(&ui);
             }
         });
     }
@@ -621,7 +626,7 @@ mod tray {
         }
     }
 
-    fn show_window(ui: &AppWindow) {
+    pub(super) fn show_window(ui: &AppWindow) {
         let _ = ui.show();
         ui.window().set_minimized(false);
     }
